@@ -179,6 +179,14 @@ function extractCoordinatorPod(groups = []) {
   return pod.name.replace(/^CSC\s*-\s*/i, "").trim();
 }
 
+function extractClinicalRNManager(groups = []) {
+  const cm = groups.find(
+    (g) => typeof g?.name === "string" && g.name.trim().toUpperCase().startsWith("CM")
+  );
+  if (!cm?.name) return null;
+  return cm.name.replace(/^CM\s*-\s*/i, "").trim();
+}
+
 function extractSalesRep(tags = []) {
   const tag = tags
     .filter((t) => typeof t === "string")
@@ -225,6 +233,11 @@ export function mapClientToZendesk(client) {
       client.coordinator ||
       extractCoordinatorPod(groups) ||
       null;
+    const clinicalRNManager =
+      client.clinical_rn_manager ||
+      client.clinicalRNManager ||
+      extractClinicalRNManager(groups) ||
+      null;
     const caseRating =
       client.case_rating ||
       client.caseRating ||
@@ -241,12 +254,11 @@ export function mapClientToZendesk(client) {
       email: primaryEmail,
       phone: primaryPhone,
       emails,
-      email_details: emailDetails,
       phones,
-      phone_details: phoneDetails,
       user_fields: {
         market: market,
         coordinator_pod: coordinator,
+        clinical_rn_manager: clinicalRNManager,
         case_rating: caseRating,
         client_status: status,
         sales_rep: salesRep,
@@ -380,9 +392,7 @@ export function mapCaregiverToZendesk(cg) {
       email: primaryEmail,
       phone: primaryPhone,
       emails,
-      email_details: emailDetails,
       phones,
-      phone_details: phoneDetails,
       user_fields: {
         market: market,
         caregiver_status: status,
