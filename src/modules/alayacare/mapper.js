@@ -156,12 +156,19 @@ function collectAllEmailDetails(client, demographics = {}) {
 }
 
 function extractMarket(groups = []) {
-  const loc = groups.find(
+  const locGroups = groups.filter(
     (g) => typeof g?.name === "string" && g.name.trim().toUpperCase().startsWith("LOC")
   );
-  if (!loc?.name) return null;
-  const match = loc.name.match(/^LOC\s*-\s*([^(]+)/i);
-  return match ? match[1].trim() : loc.name;
+  if (locGroups.length === 0) return null;
+  
+  const markets = locGroups
+    .map((loc) => {
+      const match = loc.name.match(/^LOC\s*-\s*([^(]+)/i);
+      return match ? match[1].trim() : loc.name;
+    })
+    .filter((m) => m);
+  
+  return markets.length > 0 ? markets.join(", ") : null;
 }
 
 function extractCoordinatorPod(groups = []) {
@@ -251,25 +258,135 @@ export function mapClientToZendesk(client) {
   }
 }
 
+function collectCaregiverPhoneDetails(caregiver = {}) {
+  const entries = new Map();
+
+  const pushMatch = (raw, normalized, source) => {
+    if (!normalized) return;
+    if (!entries.has(normalized)) {
+      entries.set(normalized, { normalized, raw: [], sources: [] });
+    }
+    const entry = entries.get(normalized);
+    if (!entry.raw.includes(raw)) {
+      entry.raw.push(raw);
+    }
+    entry.sources.push(source);
+  };
+
+  const addValue = (value, source) => {
+    if (typeof value !== "string") return;
+    const stringValue = value.trim();
+    if (!stringValue) return;
+    const matches = stringValue.match(PHONE_CAPTURE_REGEX);
+    if (!matches) return;
+    matches.forEach((rawMatch) => {
+      const raw = rawMatch.trim();
+      const normalized = normalizePhone(rawMatch);
+      if (!normalized) return;
+      pushMatch(raw, normalized, source);
+    });
+  };
+
+  // Top-level caregiver fields
+  [
+    ["caregiver.phone", caregiver.phone],
+    ["caregiver.phone_main", caregiver.phone_main],
+    ["caregiver.phone_other", caregiver.phone_other],
+    ["caregiver.phone_personal", caregiver.phone_personal],
+  ].forEach(([source, value]) => addValue(value, source));
+
+  const demographics = caregiver.demographics || {};
+
+  // Demographic fields
+  [
+    "phone_main",
+    "phone_other",
+    "phone_personal",
+  ].forEach((field) => {
+    addValue(demographics[field], `demographics.${field}`);
+  });
+
+  return Array.from(entries.values());
+}
+
+function collectCaregiverEmailDetails(caregiver, demographics = {}) {
+  const entries = new Map();
+
+  const pushEmail = (email, source) => {
+    if (typeof email !== "string") return;
+    const candidate = email.trim().toLowerCase();
+    if (!candidate) return;
+    if (!entries.has(candidate)) {
+      entries.set(candidate, { email: candidate, sources: [] });
+    }
+    const entry = entries.get(candidate);
+    entry.sources.push(source);
+  };
+
+  const addValue = (value, source) => {
+    if (typeof value !== "string") return;
+    const parts = value.split(/[;,]/);
+    parts.forEach((part) => pushEmail(part, source));
+  };
+
+  addValue(caregiver.email, "caregiver.email");
+  addValue(demographics.email, "demographics.email");
+
+  return Array.from(entries.values());
+}
+
 export function mapCaregiverToZendesk(cg) {
   try {
-    // Handle both snake_case (API) and camelCase (if transformed)
-    const firstName = cg.first_name || cg.firstName || "";
-    const lastName = cg.last_name || cg.lastName || "";
-    const email = cg.email || null;
-    const phone = cg.phone_main || cg.phoneMain || cg.phone || null;
+    const demographics = cg.demographics || {};
+    const firstName =
+      cg.first_name ||
+      cg.firstName ||
+      demographics.first_name ||
+      demographics.firstName ||
+      "";
+    const lastName =
+      cg.last_name ||
+      cg.lastName ||
+      demographics.last_name ||
+      demographics.lastName ||
+      "";
+
     const status = cg.status || null;
-    const market = cg.branch?.name || cg.market || null;
-    const department = cg.departments?.[0]?.name || cg.department || null;
+    const groups = cg.groups || [];
+    const departments = cg.departments || [];
+
+    const phoneDetails = collectCaregiverPhoneDetails(cg);
+    const phones = phoneDetails.map((entry) => entry.normalized);
+    const primaryPhone = phones.length > 0 ? phones[0] : null;
+
+    const emailDetails = collectCaregiverEmailDetails(cg, demographics);
+    const emails = emailDetails.map((entry) => entry.email);
+    const primaryEmail = emails.length > 0 ? emails[0] : null;
+
+    const market =
+      cg.market ||
+      cg.branch?.name ||
+      extractMarket(groups) ||
+      null;
+
+    // Get all department names
+    const departmentNames = departments
+      .map((dept) => dept?.name || dept)
+      .filter((name) => name)
+      .join(", ") || null;
 
     return {
       name: `${firstName} ${lastName}`.trim() || null,
-      email: email,
-      phone: normalizePhone(phone),
+      email: primaryEmail,
+      phone: primaryPhone,
+      emails,
+      email_details: emailDetails,
+      phones,
+      phone_details: phoneDetails,
       user_fields: {
         market: market,
         caregiver_status: status,
-        department: department,
+        department: departmentNames,
       },
     };
   } catch (err) {

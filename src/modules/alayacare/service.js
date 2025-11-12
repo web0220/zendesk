@@ -123,7 +123,7 @@ export async function fetchClients({ page = 1, count = 10, status, includeDetail
  * @param {number} caregiverId - Caregiver ID
  * @returns {Promise<Object>} Caregiver detail with demographics
  */
-async function fetchCaregiverDetail(caregiverId) {
+export async function fetchCaregiverDetail(caregiverId) {
   try {
     const res = await alayaClient.get(`/employees/employees/${caregiverId}`);
     return res.data;
@@ -134,16 +134,16 @@ async function fetchCaregiverDetail(caregiverId) {
 }
 
 /**
- * Fetch employees (caregivers)
+ * Fetch employees (caregivers) and optionally enrich each one with detail (demographics, groups, tags)
  * Endpoint:
  *   https://<tenant>.alayacare.com/ext/api/v2/employees/employees/
  * @param {Object} options - Fetch options
  * @param {number} options.page - Page number (default: 1)
  * @param {number} options.count - Items per page (default: 10)
  * @param {string} options.status - Filter by status (e.g., "active")
- * @param {boolean} options.includeDetails - Fetch full details with email/phone if missing (default: false, as list usually has them)
+ * @param {boolean} options.includeDetails - Fetch full details with demographics, groups, tags (default: true)
  */
-export async function fetchCaregivers({ page = 1, count = 10, status, includeDetails = false } = {}) {
+export async function fetchCaregivers({ page = 1, count = 10, status, includeDetails = true } = {}) {
   try {
     const params = { page, count };
     // Try API-level filtering if status is provided
@@ -162,35 +162,43 @@ export async function fetchCaregivers({ page = 1, count = 10, status, includeDet
       });
     }
 
-    // Fetch details for caregivers missing email/phone if requested
+    // Fetch full details for all caregivers if requested
     if (includeDetails && caregivers.length > 0) {
-      const needsDetail = caregivers.filter((cg) => !cg.email || !cg.phone);
-      if (needsDetail.length > 0) {
-        logger.info(`📞 Fetching details for ${needsDetail.length} caregivers missing contact info...`);
-        const detailPromises = needsDetail.map((cg) => fetchCaregiverDetail(cg.id));
-        const details = await Promise.all(detailPromises);
+      logger.info(`📞 Fetching details for ${caregivers.length} caregivers...`);
+      const details = await Promise.all(caregivers.map((cg) => fetchCaregiverDetail(cg.id)));
 
-        // Merge demographics into caregiver objects
-        const detailMap = new Map();
-        needsDetail.forEach((cg, idx) => {
-          if (details[idx]) {
-            detailMap.set(cg.id, details[idx]);
-          }
-        });
+      // Merge detail + derived fields into each caregiver
+      caregivers = caregivers.map((c, i) => {
+        const d = details[i] || {};
+        const demo = d.demographics || {};
+        const groups = d.groups || c.groups || [];
+        const tags = d.tags || c.tags || [];
+        const departments = d.departments || c.departments || [];
 
-        caregivers = caregivers.map((caregiver) => {
-          const detail = detailMap.get(caregiver.id);
-          if (detail?.demographics) {
-            return {
-              ...caregiver,
-              email: caregiver.email || detail.demographics.email || null,
-              phone_main: caregiver.phone_main || caregiver.phone || detail.demographics.phone_main || null,
-              phone: caregiver.phone || caregiver.phone_main || detail.demographics.phone_main || null,
-            };
-          }
-          return caregiver;
-        });
-      }
+        return {
+          ...d, // Start with full detail object (includes all nested structures)
+          ...c, // Override with list data where it exists
+          // Preserve full demographics object
+          demographics: demo,
+          // Keep raw arrays
+          groups,
+          tags,
+          departments,
+          // Flatten commonly-used fields for mapper convenience
+          first_name: demo.first_name ?? c.first_name ?? null,
+          last_name: demo.last_name ?? c.last_name ?? null,
+          email: demo.email ?? c.email ?? null,
+          phone_main: demo.phone_main ?? c.phone_main ?? c.phone ?? null,
+          phone: demo.phone_main ?? c.phone_main ?? c.phone ?? null,
+          phone_other: demo.phone_other ?? c.phone_other ?? null,
+          address: demo.address ?? c.address ?? null,
+          city: demo.city ?? c.city ?? null,
+          state: demo.state ?? c.state ?? null,
+          zip: demo.zip ?? c.zip ?? null,
+          // Convenience: normalized phone
+          phone_normalized: firstDigitsPhone(demo.phone_main || c.phone_main || c.phone),
+        };
+      });
     }
 
     return caregivers;
