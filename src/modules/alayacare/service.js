@@ -7,7 +7,7 @@ const basicAuth = Buffer.from(
   `${config.alayacare.publicKey}:${config.alayacare.privateKey}`
 ).toString("base64");
 
-const alayaClient = axios.create({
+export const alayaClient = axios.create({
   baseURL: config.alayacare.baseUrl, // https://alvitacare.alayacare.com/ext/api/v2
   headers: {
     Authorization: `Basic ${basicAuth}`,
@@ -15,73 +15,99 @@ const alayaClient = axios.create({
 });
 
 /**
- * Fetch individual client detail (includes email and phone)
- * @param {number} clientId - Client ID
- * @returns {Promise<Object>} Client detail with demographics
+ * Fetch full client detail (includes demographics, groups, tags)
  */
-async function fetchClientDetail(clientId) {
-  try {
-    const res = await alayaClient.get(`/patients/clients/${clientId}`);
-    return res.data;
-  } catch (err) {
-    logger.warn(`Failed to fetch detail for client ${clientId}:`, err.message);
-    return null;
-  }
+export async function fetchClientDetail(id) {
+  const { data } = await alayaClient.get(`/patients/clients/${id}`);
+  return data;
 }
 
 /**
- * Fetch clients (patients)
- * AlayaCare docs use page & count, not limit
- * Endpoint (from docs):
- *   https://<tenant>.alayacare.com/ext/api/v2/patients/clients/
- * @param {Object} options - Fetch options
- * @param {number} options.page - Page number (default: 1)
- * @param {number} options.count - Items per page (default: 10)
- * @param {string} options.status - Filter by status (e.g., "active")
- * @param {boolean} options.includeDetails - Fetch full details with email/phone (default: true)
+ * Extractors for derived fields from detail payload
+ */
+function extractMarket(groups = []) {
+  // Example: "LOC - NYC (L001)" → "NYC"
+  const loc = groups.find(g => typeof g.name === "string" && g.name.startsWith("LOC"));
+  if (!loc) return null;
+  const match = loc.name.match(/^LOC\s*-\s*([^(]+)/i);
+  return match ? match[1].trim() : loc.name;
+}
+
+function extractCoordinatorPod(groups = []) {
+  // Example: "CSC - Katie" → "Katie"
+  const pod = groups.find(g => typeof g.name === "string" && g.name.startsWith("CSC"));
+  if (!pod) return null;
+  return pod.name.replace(/^CSC\s*-\s*/i, "").trim();
+}
+
+function extractSalesRep(tags = []) {
+  // Example tag: "BD Michelle Wells" → "Michelle Wells"
+  const tag = tags.find(t => typeof t === "string" && t.trim().toUpperCase().startsWith("BD "));
+  if (!tag) return null;
+  return tag.replace(/^BD\s*/i, "").trim();
+}
+
+function firstDigitsPhone(p) {
+  if (!p) return null;
+  // Some phone_main values contain text like "Name (646) 752-1576 - Son"
+  const digits = String(p).replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  return digits.startsWith("1") ? `+${digits}` : `+1${digits}`;
+}
+
+/**
+ * Fetch clients (list) and optionally enrich each one with detail (demographics, groups, tags)
  */
 export async function fetchClients({ page = 1, count = 10, status, includeDetails = true } = {}) {
   try {
     const params = { page, count };
-    // Try API-level filtering if status is provided
-    if (status) {
-      params.status = status;
-    }
+    if (status) params.status = status;
 
-    const res = await alayaClient.get("/patients/clients/", { params });
+    const res = await alayaClient.get(`/patients/clients/`, { params });
     let clients = res.data?.items || res.data || [];
 
-    // Client-side filtering if API doesn't support status param or returns all statuses
-    if (status && clients.length > 0) {
-      clients = clients.filter((client) => {
-        const clientStatus = client.status?.toLowerCase();
-        return clientStatus === status.toLowerCase();
-      });
+    // Client-side filter guard (if API ignores status)
+    if (status && clients.length) {
+      clients = clients.filter(c => (c.status || "").toLowerCase() === status.toLowerCase());
     }
 
-    // Fetch details (email, phone) for each client if requested
-    if (includeDetails && clients.length > 0) {
+    if (includeDetails && clients.length) {
       logger.info(`📞 Fetching details for ${clients.length} clients...`);
-      const detailPromises = clients.map((client) => fetchClientDetail(client.id));
-      const details = await Promise.all(detailPromises);
+      const details = await Promise.all(clients.map(c => fetchClientDetail(c.id)));
 
-      // Merge demographics (email, phone_main) into client objects
-      clients = clients.map((client, index) => {
-        const detail = details[index];
-        if (detail?.demographics) {
-          return {
-            ...client,
-            email: detail.demographics.email || null,
-            phone_main: detail.demographics.phone_main || null,
-            phone: detail.demographics.phone_main || null, // Alias for compatibility
-            // Include other useful demographics fields
-            address: detail.demographics.address || null,
-            city: detail.demographics.city || null,
-            state: detail.demographics.state || null,
-            zip: detail.demographics.zip || null,
-          };
-        }
-        return client;
+      // Merge detail + derived fields into each client
+      clients = clients.map((c, i) => {
+        const d = details[i] || {};
+        const demo = d.demographics || {};
+        const groups = d.groups || c.groups || [];
+        const tags = d.tags || c.tags || [];
+
+        return {
+          ...c,
+          // flatten commonly-used fields for mapper convenience
+          first_name: demo.first_name ?? c.first_name ?? null,
+          last_name: demo.last_name ?? c.last_name ?? null,
+          email: demo.email ?? c.email ?? null,
+          phone_main: demo.phone_main ?? c.phone_main ?? null,
+          phone: demo.phone_main ?? c.phone ?? null,
+          address: demo.address ?? c.address ?? null,
+          city: demo.city ?? c.city ?? null,
+          state: demo.state ?? c.state ?? null,
+          zip: demo.zip ?? c.zip ?? null,
+
+          // keep raw arrays too
+          groups,
+          tags,
+
+          // derived fields for Zendesk user_fields
+          market: extractMarket(groups),
+          coordinator_pod: extractCoordinatorPod(groups),
+          case_rating: demo.case_rating ?? null,
+          sales_rep: extractSalesRep(tags),
+
+          // convenience: normalized phone
+          phone_normalized: firstDigitsPhone(demo.phone_main || c.phone_main || c.phone),
+        };
       });
     }
 
