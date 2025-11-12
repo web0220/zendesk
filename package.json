@@ -1,0 +1,23 @@
+{
+  "name": "alvita",
+  "version": "1.0.0",
+  "description": "Integration service for AlayaCare and Zendesk",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "aws-sdk": "^2.1691.0",
+    "dotenv": "^17.2.3",
+    "p-limit": "^5.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
