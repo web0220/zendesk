@@ -172,19 +172,35 @@ function extractMarket(groups = []) {
 }
 
 function extractCoordinatorPod(groups = []) {
-  const pod = groups.find(
+  const cscGroups = groups.filter(
     (g) => typeof g?.name === "string" && g.name.trim().toUpperCase().startsWith("CSC")
   );
-  if (!pod?.name) return null;
-  return pod.name.replace(/^CSC\s*-\s*/i, "").trim();
+  if (cscGroups.length === 0) return null;
+  
+  const pods = cscGroups
+    .map((csc) => {
+      const cleaned = csc.name.replace(/^CSC\s*-\s*/i, "").trim();
+      return cleaned || csc.name;
+    })
+    .filter((p) => p);
+  
+  return pods.length > 0 ? pods.join(", ") : null;
 }
 
 function extractClinicalRNManager(groups = []) {
-  const cm = groups.find(
+  const cmGroups = groups.filter(
     (g) => typeof g?.name === "string" && g.name.trim().toUpperCase().startsWith("CM")
   );
-  if (!cm?.name) return null;
-  return cm.name.replace(/^CM\s*-\s*/i, "").trim();
+  if (cmGroups.length === 0) return null;
+  
+  const managers = cmGroups
+    .map((cm) => {
+      const cleaned = cm.name.replace(/^CM\s*-\s*/i, "").trim();
+      return cleaned || cm.name;
+    })
+    .filter((m) => m);
+  
+  return managers.length > 0 ? managers.join(", ") : null;
 }
 
 function extractSalesRep(tags = []) {
