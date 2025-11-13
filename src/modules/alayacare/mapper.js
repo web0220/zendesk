@@ -265,19 +265,56 @@ export function mapClientToZendesk(client) {
       extractSalesRep(tags) ||
       null;
 
+    // Convert market to array: split by comma, trim, lowercase
+    const marketArray = market
+      ? market
+          .split(",")
+          .map((m) => m.trim().toLowerCase())
+          .filter((m) => m)
+      : null;
+
+    // Convert secondary phones (all phones except primary) to identities array
+    const phoneIdentities = phones.length > 1 
+      ? phones.slice(1).map((phone) => ({
+          type: "phone",
+          value: phone,
+        }))
+      : [];
+
+    // Add secondary emails (all emails except primary) to identities array
+    const emailIdentities = emails.length > 1 
+      ? emails.slice(1).map((email) => ({
+          type: "email",
+          value: email,
+        }))
+      : [];
+
+    // Combine phone and email identities
+    const identities = [...phoneIdentities, ...emailIdentities];
+
+    // Convert comma-separated strings to arrays (lowercase, spaces to underscores)
+    const coordinatorPodArray = coordinator
+      ? coordinator.split(",").map((c) => c.trim().replace(/\s+/g, "_").toLowerCase()).filter((c) => c)
+      : null;
+    const clinicalRNManagerArray = clinicalRNManager
+      ? clinicalRNManager.split(",").map((m) => m.trim().replace(/\s+/g, "_").toLowerCase()).filter((m) => m)
+      : null;
+    const salesRepArray = salesRep
+      ? salesRep.split(",").map((s) => s.trim().replace(/\s+/g, "_").toLowerCase()).filter((s) => s)
+      : null;
+
     return {
       name: `${firstName} ${lastName}`.trim() || null,
       email: primaryEmail,
       phone: primaryPhone,
-      emails,
-      phones,
+      identities,
       user_fields: {
-        market: market,
-        coordinator_pod: coordinator,
-        clinical_rn_manager: clinicalRNManager,
-        case_rating: caseRating,
-        client_status: status,
-        sales_rep: salesRep,
+        market: marketArray,
+        coordinator_pod: coordinatorPodArray,
+        clinical_rn_manager: clinicalRNManagerArray,
+        case_rating: caseRating ? caseRating.replace(/\s+/g, "_").toLowerCase() : null,
+        client_status: status ? `cl_${status.replace(/\s+/g, "_").toLowerCase()}` : null,
+        sales_rep: salesRepArray,
       },
     };
   } catch (err) {
@@ -397,21 +434,48 @@ export function mapCaregiverToZendesk(cg) {
       extractMarket(groups) ||
       null;
 
-    // Get all department names
-    const departmentNames = departments
+    // Convert market to array: split by comma, trim, lowercase
+    const marketArray = market
+      ? market
+          .split(",")
+          .map((m) => m.trim().toLowerCase())
+          .filter((m) => m)
+      : null;
+
+    // Get all department names, replace spaces with underscores and convert to lowercase
+    const departmentArray = departments
       .map((dept) => dept?.name || dept)
       .filter((name) => name)
-      .join(", ") || null;
+      .map((name) => name.replace(/\s+/g, "_").toLowerCase());
+    const departmentNames = departmentArray.length > 0 ? departmentArray : null;
+
+    // Convert secondary phones (all phones except primary) to identities array
+    const phoneIdentities = phones.length > 1 
+      ? phones.slice(1).map((phone) => ({
+          type: "phone",
+          value: phone,
+        }))
+      : [];
+
+    // Add secondary emails (all emails except primary) to identities array
+    const emailIdentities = emails.length > 1 
+      ? emails.slice(1).map((email) => ({
+          type: "email",
+          value: email,
+        }))
+      : [];
+
+    // Combine phone and email identities
+    const identities = [...phoneIdentities, ...emailIdentities];
 
     return {
       name: `${firstName} ${lastName}`.trim() || null,
       email: primaryEmail,
       phone: primaryPhone,
-      emails,
-      phones,
+      identities,
       user_fields: {
-        market: market,
-        caregiver_status: status,
+        market: marketArray,
+        caregiver_status: status ? `cg_${status}` : null,
         department: departmentNames,
       },
     };
