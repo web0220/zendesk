@@ -318,8 +318,16 @@ export function mapClientToZendesk(client) {
       ? salesRep.split(",").map((s) => s.trim().replace(/\s+/g, "_").toLowerCase()).filter((s) => s)
       : null;
 
-    // Organization ID for clients
-    const organizationId = 42824772337179;
+    // Determine organization ID for clients
+    // Check if any email (primary or secondary) contains @alvitacare.com domain
+    const allEmails = [primaryEmail, ...emails.slice(1)].filter(Boolean);
+    const isAlvitacareMember = allEmails.some(email => 
+      typeof email === "string" && email.toLowerCase().includes("@alvitacare.com")
+    );
+    
+    const organizationId = isAlvitacareMember 
+      ? 40994316312731  // AlvitaCare members
+      : 42824772337179; // Regular clients
 
     // Format external_id as AC + zero-padded ID (e.g., AC000000417)
     const externalId = client.id ? `AC${String(client.id).padStart(9, '0')}` : null;
