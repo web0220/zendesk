@@ -456,9 +456,9 @@ export function mapCaregiverToZendesk(cg) {
     const primaryEmail = emails.length > 0 ? emails[0] : null;
 
     const market =
+      extractMarket(groups) ||
       cg.market ||
       cg.branch?.name ||
-      extractMarket(groups) ||
       null;
 
     // MULTISELECT fields (arrays)
