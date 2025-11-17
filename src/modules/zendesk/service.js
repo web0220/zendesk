@@ -16,21 +16,89 @@ const zendeskClient = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+function buildZendeskUserObject(user = {}) {
+  return {
+    external_id: user.external_id ?? null,
+    name: user.name ?? null,
+    email: user.email ?? null,
+    phone: user.phone ?? null,
+    organization_id: user.organization_id || null,
+    user_fields: user.user_fields || {},
+  };
+}
+
+function normalizeIdentities(identities = []) {
+  return identities.map(identity => {
+    let identityType;
+    if (identity.type === "phone") {
+      identityType = "phone_number";
+    } else if (identity.type === "email") {
+      identityType = "email";
+    } else {
+      identityType = identity.type;
+    }
+
+    return {
+      type: identityType,
+      value: identity.value,
+    };
+  });
+}
+
+async function addIdentities(userId, identities = []) {
+  const formatted = normalizeIdentities(identities);
+  if (!userId || formatted.length === 0) return;
+
+  logger.info(`📞 Adding ${formatted.length} identity/identities for user ${userId}...`);
+
+  for (const identity of formatted) {
+    try {
+      await zendeskClient.post(`/users/${userId}/identities.json`, { identity });
+      logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
+    } catch (err) {
+      const msg = err.response?.data || err.message;
+      logger.warn(`   ⚠️ Failed to add identity ${identity.value}: ${JSON.stringify(msg)}`);
+    }
+  }
+}
+
+// ======================================================
+// ➕ Upsert single user (create or update one)
+// ======================================================
+export async function upsertSingleUser(user) {
+  return withRetry(async () => {
+    const { identities, ...userWithoutIdentities } = user || {};
+
+    const payload = {
+      user: buildZendeskUserObject(userWithoutIdentities),
+    };
+
+    const res = await zendeskClient.post("/users/create_or_update.json", payload);
+    const userId = res.data?.user?.id;
+
+    if (!userId) {
+      logger.warn(`⚠️ No user ID returned for ${user?.name || user?.email}`);
+      return null;
+    }
+
+    logger.info(`✅ User ${userId} ${res.data?.user?.created_at ? "created" : "updated"}: ${user?.name || user?.email}`);
+
+    await addIdentities(userId, identities);
+
+    return { userId, user: res.data?.user };
+  });
+}
+
 // ======================================================
 // 🚀 Bulk upsert users (create or update many)
 // ======================================================
 export async function bulkUpsertUsers(users = []) {
   return withRetry(async () => {
-    // Send everything except identities
+    // Send everything except identities and ac_id (internal field)
     const payload = {
       users: users.map(u => {
-        const { identities, ...userWithoutIdentities } = u;
-        return {
-          name: userWithoutIdentities.name,
-          email: userWithoutIdentities.email,
-          phone: userWithoutIdentities.phone,
-          user_fields: userWithoutIdentities.user_fields || {},
-        };
+        const { identities, ac_id, ...userWithoutIdentities } = u || {};
+        return buildZendeskUserObject(userWithoutIdentities);
       }),
     };
 
@@ -47,48 +115,11 @@ export async function bulkUpsertUsers(users = []) {
     const job = await pollJobStatus(jobId);
     logger.info(`✅ Job ${jobId} finished with status: ${job.status}`);
 
-    const jobResults = job.results || [];
-
-    // Send identities for each user
-    for (let i = 0; i < jobResults.length; i++) {
-      const result = jobResults[i];
-      const userData = users[i];
-
-      if ((result.status === "Created" || result.status === "Updated") && result.id) {
-        const userId = result.id;
-        const identities = userData.identities || [];
-
-        // Send each identity separately
-        for (const identity of identities) {
-          try {
-            // Convert identity type to Zendesk API format
-            // "phone" -> "phone_number", "email" -> "email"
-            let identityType;
-            if (identity.type === "phone") {
-              identityType = "phone_number";
-            } else if (identity.type === "email") {
-              identityType = "email";
-            } else {
-              // Keep other types as-is
-              identityType = identity.type;
-            }
-            
-            await zendeskClient.post(`/users/${userId}/identities.json`, {
-              identity: {
-                type: identityType,
-                value: identity.value,
-              },
-            });
-            logger.info(`   ➕ Added ${identityType}: ${identity.value} for user ${userId}`);
-          } catch (err) {
-            const msg = err.response?.data || err.message;
-            logger.warn(`   ⚠️ Failed to add identity ${identity.value} for user ${userId}: ${JSON.stringify(msg)}`);
-          }
-        }
-      }
-    }
-
-    return res.data;
+    // Return job status with results
+    return {
+      job_status: job,
+      original_users: users, // Include original user data for mapping
+    };
   });
 }
 
@@ -103,32 +134,56 @@ export async function getJobStatus(jobId) {
 }
 
 // ======================================================
+// 📋 Get existing user identities
+// ======================================================
+export async function getUserIdentities(userId) {
+  return withRetry(async () => {
+    const res = await zendeskClient.get(`/users/${userId}/identities.json`);
+    return res.data?.identities || [];
+  });
+}
+
+// ======================================================
 // ➕ Sync user identities (secondary emails & phones)
 // ======================================================
 export async function syncUserIdentities(userId, userData) {
   if (!userId) return;
 
-  const extras = [];
+  // Get existing identities from Zendesk
+  const existingIdentities = await getUserIdentities(userId);
+  const existingValues = new Set(
+    existingIdentities.map(id => id.value?.toLowerCase().trim())
+  );
 
-  // Collect secondary emails
-  if (Array.isArray(userData.emails) && userData.emails.length > 1) {
-    for (const email of userData.emails.slice(1)) {
-      extras.push({ type: "email", value: email });
+  logger.info(`📋 User ${userId} has ${existingIdentities.length} existing identities`);
+
+  // Collect identities from userData
+  const identitiesToAdd = [];
+  
+  if (Array.isArray(userData.identities)) {
+    for (const identity of userData.identities) {
+      const normalizedValue = identity.value?.toLowerCase().trim();
+      
+      // Skip if already exists
+      if (existingValues.has(normalizedValue)) {
+        logger.debug(`   ⏭️  Skipping duplicate ${identity.type}: ${identity.value}`);
+        continue;
+      }
+
+      // Normalize type for Zendesk API
+      const type = identity.type === "phone" ? "phone_number" : identity.type;
+      identitiesToAdd.push({ type, value: identity.value });
     }
   }
 
-  // Collect secondary phones
-  if (Array.isArray(userData.phones) && userData.phones.length > 1) {
-    for (const phone of userData.phones.slice(1)) {
-      extras.push({ type: "phone_number", value: phone });
-    }
+  if (identitiesToAdd.length === 0) {
+    logger.info(`   ✅ No new identities to add for user ${userId}`);
+    return;
   }
 
-  if (extras.length === 0) return;
+  logger.info(`📞 Adding ${identitiesToAdd.length} new identities for user ${userId}`);
 
-  logger.info(`📞 Adding ${extras.length} extra identities for user ${userId}`);
-
-  for (const identity of extras) {
+  for (const identity of identitiesToAdd) {
     try {
       await zendeskClient.post(`/users/${userId}/identities.json`, { identity });
       logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);

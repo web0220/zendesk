@@ -122,7 +122,9 @@ function collectAllEmailDetails(client, demographics = {}) {
 
   const addValue = (value, source) => {
     if (typeof value !== "string") return;
-    const parts = value.split(/[;,]/);
+    // Split on semicolons, commas, and whitespace (spaces, tabs, newlines)
+    // This handles cases like "email1@example.com email2@example.com"
+    const parts = value.split(/[;,\s]+/).filter(part => part.trim());
     parts.forEach((part) => pushEmail(part, source));
   };
 
@@ -292,29 +294,52 @@ export function mapClientToZendesk(client) {
     // Combine phone and email identities
     const identities = [...phoneIdentities, ...emailIdentities];
 
-    // Convert comma-separated strings to arrays (lowercase, spaces to underscores)
-    const coordinatorPodArray = coordinator
-      ? coordinator.split(",").map((c) => c.trim().replace(/\s+/g, "_").toLowerCase()).filter((c) => c)
+    // DROP-DOWN fields (single value - string)
+    // coordinator_pod, case_rating, client_status
+    const coordinatorPodValue = coordinator
+      ? coordinator.split(",")[0].trim().replace(/\s+/g, "_").toLowerCase()
       : null;
+    
+    const caseRatingValue = caseRating 
+      ? caseRating.replace(/\s+/g, "_").toLowerCase() 
+      : null;
+    
+    const clientStatusValue = status 
+      ? `cl_${status.replace(/\s+/g, "_").toLowerCase()}` 
+      : null;
+
+    // MULTISELECT fields (arrays)
+    // clinical_rn_manager, market, sales_rep
     const clinicalRNManagerArray = clinicalRNManager
       ? clinicalRNManager.split(",").map((m) => m.trim().replace(/\s+/g, "_").toLowerCase()).filter((m) => m)
       : null;
+    
     const salesRepArray = salesRep
       ? salesRep.split(",").map((s) => s.trim().replace(/\s+/g, "_").toLowerCase()).filter((s) => s)
       : null;
 
+    // Organization ID for clients
+    const organizationId = 42824772337179;
+
+    // Format external_id as AC + zero-padded ID (e.g., AC000000417)
+    const externalId = client.id ? `AC${String(client.id).padStart(9, '0')}` : null;
+
     return {
+      external_id: externalId,
+      ac_id: client.id || null,
       name: `${firstName} ${lastName}`.trim() || null,
       email: primaryEmail,
       phone: primaryPhone,
+      organization_id: organizationId,
       identities,
       user_fields: {
         market: marketArray,
-        coordinator_pod: coordinatorPodArray,
+        coordinator_pod: coordinatorPodValue,
         clinical_rn_manager: clinicalRNManagerArray,
-        case_rating: caseRating ? caseRating.replace(/\s+/g, "_").toLowerCase() : null,
-        client_status: status ? `cl_${status.replace(/\s+/g, "_").toLowerCase()}` : null,
+        case_rating: caseRatingValue,
+        client_status: clientStatusValue,
         sales_rep: salesRepArray,
+        type: "client",
       },
     };
   } catch (err) {
@@ -390,7 +415,9 @@ function collectCaregiverEmailDetails(caregiver, demographics = {}) {
 
   const addValue = (value, source) => {
     if (typeof value !== "string") return;
-    const parts = value.split(/[;,]/);
+    // Split on semicolons, commas, and whitespace (spaces, tabs, newlines)
+    // This handles cases like "email1@example.com email2@example.com"
+    const parts = value.split(/[;,\s]+/).filter(part => part.trim());
     parts.forEach((part) => pushEmail(part, source));
   };
 
@@ -434,7 +461,8 @@ export function mapCaregiverToZendesk(cg) {
       extractMarket(groups) ||
       null;
 
-    // Convert market to array: split by comma, trim, lowercase
+    // MULTISELECT fields (arrays)
+    // market, department
     const marketArray = market
       ? market
           .split(",")
@@ -442,12 +470,17 @@ export function mapCaregiverToZendesk(cg) {
           .filter((m) => m)
       : null;
 
-    // Get all department names, replace spaces with underscores and convert to lowercase
     const departmentArray = departments
       .map((dept) => dept?.name || dept)
       .filter((name) => name)
       .map((name) => name.replace(/\s+/g, "_").toLowerCase());
     const departmentNames = departmentArray.length > 0 ? departmentArray : null;
+
+    // DROP-DOWN fields (single value - string)
+    // caregiver_status
+    const caregiverStatusValue = status 
+      ? `cg_${status.replace(/\s+/g, "_").toLowerCase()}` 
+      : null;
 
     // Convert secondary phones (all phones except primary) to identities array
     const phoneIdentities = phones.length > 1 
@@ -468,15 +501,33 @@ export function mapCaregiverToZendesk(cg) {
     // Combine phone and email identities
     const identities = [...phoneIdentities, ...emailIdentities];
 
+    // Determine organization ID for caregivers
+    // Check if any email (primary or secondary) contains @alvitacare.com domain
+    const allEmails = [primaryEmail, ...emails.slice(1)].filter(Boolean);
+    const isAlvitacareMember = allEmails.some(email => 
+      typeof email === "string" && email.toLowerCase().includes("@alvitacare.com")
+    );
+    
+    const organizationId = isAlvitacareMember 
+      ? 40994316312731  // AlvitaCare members
+      : 43279021546651; // Regular caregivers
+
+    // Format external_id as AC + zero-padded ID (e.g., AC000000417)
+    const externalId = cg.id ? `AC${String(cg.id).padStart(9, '0')}` : null;
+
     return {
+      external_id: externalId,
+      ac_id: cg.id || null,
       name: `${firstName} ${lastName}`.trim() || null,
       email: primaryEmail,
       phone: primaryPhone,
+      organization_id: organizationId,
       identities,
       user_fields: {
         market: marketArray,
-        caregiver_status: status ? `cg_${status}` : null,
+        caregiver_status: caregiverStatusValue,
         department: departmentNames,
+        type: "caregiver",
       },
     };
   } catch (err) {

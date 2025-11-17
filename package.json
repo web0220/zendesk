@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/main.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:mapper": "node scripts/test-mapper-client.js"
+    "db:inspect": "node scripts/inspect-database.js"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +15,7 @@
   "dependencies": {
     "axios": "^1.13.2",
     "aws-sdk": "^2.1691.0",
+    "better-sqlite3": "^11.0.0",
     "dotenv": "^17.2.3",
     "p-limit": "^5.0.0"
   },

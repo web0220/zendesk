@@ -81,9 +81,19 @@ export async function fetchClients({ page = 1, count = 10, status, includeDetail
         const demo = d.demographics || {};
         const groups = d.groups || c.groups || [];
         const tags = d.tags || c.tags || [];
+        const contacts = d.contacts || c.contacts || [];
 
         return {
-          ...c,
+          ...d, // Start with full detail object (includes all nested structures like contacts, demographics)
+          ...c, // Override with list data where it exists
+          // Preserve full demographics object (needed by mapper for collectAllPhoneDetails)
+          demographics: demo,
+          // Preserve contacts array (needed by mapper for collectAllPhoneDetails)
+          contacts,
+          // Keep raw arrays too
+          groups,
+          tags,
+
           // flatten commonly-used fields for mapper convenience
           first_name: demo.first_name ?? c.first_name ?? null,
           last_name: demo.last_name ?? c.last_name ?? null,
@@ -94,10 +104,6 @@ export async function fetchClients({ page = 1, count = 10, status, includeDetail
           city: demo.city ?? c.city ?? null,
           state: demo.state ?? c.state ?? null,
           zip: demo.zip ?? c.zip ?? null,
-
-          // keep raw arrays too
-          groups,
-          tags,
 
           // derived fields for Zendesk user_fields
           market: extractMarket(groups),
