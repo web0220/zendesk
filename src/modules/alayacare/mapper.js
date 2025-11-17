@@ -271,7 +271,7 @@ export function mapClientToZendesk(client) {
     const marketArray = market
       ? market
           .split(",")
-          .map((m) => m.trim().toLowerCase())
+          .map((m) => m.trim().replace(/\s+/g, "_").toLowerCase())
           .filter((m) => m)
       : null;
 
