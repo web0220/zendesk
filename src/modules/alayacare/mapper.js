@@ -1,4 +1,5 @@
 import { logger } from "../../config/logger.js";
+import { isValidEmail } from "../common/validator.js";
 
 const PHONE_CAPTURE_REGEX =
   /(?:(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4})/g;
@@ -111,8 +112,24 @@ function collectAllEmailDetails(client, demographics = {}) {
 
   const pushEmail = (email, source) => {
     if (typeof email !== "string") return;
-    const candidate = email.trim().toLowerCase();
+    
+    // Clean up email: remove angle brackets, trailing slashes, etc.
+    let candidate = email.trim().toLowerCase();
+    
+    // Remove angle brackets if present: <email@example.com> -> email@example.com
+    candidate = candidate.replace(/^<|>$/g, "");
+    
+    // Remove trailing slashes: email@example.com/ -> email@example.com
+    candidate = candidate.replace(/\/+$/, "");
+    
     if (!candidate) return;
+    
+    // Validate email format before adding
+    if (!isValidEmail(candidate)) {
+      logger.debug(`   ⏭️  Skipping invalid email from ${source}: ${candidate}`);
+      return;
+    }
+    
     if (!entries.has(candidate)) {
       entries.set(candidate, { email: candidate, sources: [] });
     }
@@ -122,10 +139,15 @@ function collectAllEmailDetails(client, demographics = {}) {
 
   const addValue = (value, source) => {
     if (typeof value !== "string") return;
-    // Split on semicolons, commas, and whitespace (spaces, tabs, newlines)
-    // This handles cases like "email1@example.com email2@example.com"
-    const parts = value.split(/[;,\s]+/).filter(part => part.trim());
-    parts.forEach((part) => pushEmail(part, source));
+    
+    // Extract emails using regex pattern (more reliable than splitting)
+    // Matches: word@word.word format
+    const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+    const matches = value.match(emailPattern);
+    
+    if (matches) {
+      matches.forEach((email) => pushEmail(email, source));
+    }
   };
 
   addValue(client.email, "client.email");
@@ -412,8 +434,24 @@ function collectCaregiverEmailDetails(caregiver, demographics = {}) {
 
   const pushEmail = (email, source) => {
     if (typeof email !== "string") return;
-    const candidate = email.trim().toLowerCase();
+    
+    // Clean up email: remove angle brackets, trailing slashes, etc.
+    let candidate = email.trim().toLowerCase();
+    
+    // Remove angle brackets if present: <email@example.com> -> email@example.com
+    candidate = candidate.replace(/^<|>$/g, "");
+    
+    // Remove trailing slashes: email@example.com/ -> email@example.com
+    candidate = candidate.replace(/\/+$/, "");
+    
     if (!candidate) return;
+    
+    // Validate email format before adding
+    if (!isValidEmail(candidate)) {
+      logger.debug(`   ⏭️  Skipping invalid email from ${source}: ${candidate}`);
+      return;
+    }
+    
     if (!entries.has(candidate)) {
       entries.set(candidate, { email: candidate, sources: [] });
     }
@@ -423,10 +461,15 @@ function collectCaregiverEmailDetails(caregiver, demographics = {}) {
 
   const addValue = (value, source) => {
     if (typeof value !== "string") return;
-    // Split on semicolons, commas, and whitespace (spaces, tabs, newlines)
-    // This handles cases like "email1@example.com email2@example.com"
-    const parts = value.split(/[;,\s]+/).filter(part => part.trim());
-    parts.forEach((part) => pushEmail(part, source));
+    
+    // Extract emails using regex pattern (more reliable than splitting)
+    // Matches: word@word.word format
+    const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+    const matches = value.match(emailPattern);
+    
+    if (matches) {
+      matches.forEach((email) => pushEmail(email, source));
+    }
   };
 
   addValue(caregiver.email, "caregiver.email");

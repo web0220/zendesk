@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/main.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "db:inspect": "node scripts/inspect-database.js"
+    "db:inspect": "node scripts/inspect-database.js",
+    "report:cm": "node scripts/find-cm-mismatch.js"
   },
   "keywords": [],
   "author": "",

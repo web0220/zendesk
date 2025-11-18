@@ -1,14 +1,30 @@
 import { logger } from "../../config/logger.js";
 
 /**
+ * Clean email: remove angle brackets, trailing slashes, etc.
+ * @param {string} email
+ * @returns {string}
+ */
+export function cleanEmail(email) {
+  if (!email || typeof email !== "string") return email;
+  let cleaned = email.trim();
+  // Remove angle brackets: <email@example.com> -> email@example.com
+  cleaned = cleaned.replace(/^<|>$/g, "");
+  // Remove trailing slashes: email@example.com/ -> email@example.com
+  cleaned = cleaned.replace(/\/+$/, "");
+  return cleaned;
+}
+
+/**
  * Validate email format
  * @param {string} email
  * @returns {boolean}
  */
 export function isValidEmail(email) {
   if (!email) return false;
+  const cleaned = cleanEmail(email);
   const pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return pattern.test(email.trim());
+  return pattern.test(cleaned);
 }
 
 /**
@@ -45,9 +61,13 @@ export function validateZendeskUser(user) {
 export function sanitizeUsers(users = []) {
   const valid = [];
   for (const user of users) {
-    if (validateZendeskUser(user)) {
-      const cleaned = { ...user, phone: normalizePhone(user.phone) };
-      valid.push(cleaned);
+    // Clean email before validation
+    const cleanedEmail = user.email ? cleanEmail(user.email) : user.email;
+    const cleanedUser = { ...user, email: cleanedEmail };
+    
+    if (validateZendeskUser(cleanedUser)) {
+      const finalUser = { ...cleanedUser, phone: normalizePhone(cleanedUser.phone) };
+      valid.push(finalUser);
     }
   }
   logger.info(`🧹 Sanitized ${valid.length}/${users.length} users`);
