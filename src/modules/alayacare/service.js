@@ -148,10 +148,12 @@ export async function fetchClients({
     }
 
     const allClients = [];
+    const seenIds = new Set(); // Track IDs to prevent duplicates
     let currentPage = page ?? 1;
     let pagesFetched = 0;
     let consecutiveEmptyPages = 0; // Track empty pages to detect API issues
     const MAX_CONSECUTIVE_EMPTY = 3; // Stop after 3 consecutive empty pages
+    let totalFilteredOut = 0; // Track how many items were filtered out
 
     while (true) {
       const result = await fetchClientPage({
@@ -164,7 +166,26 @@ export async function fetchClients({
       const batch = result.clients;
       const originalCount = result.originalCount;
 
-      logger.debug(`📄 Clients page ${currentPage}: API returned ${originalCount}, after filtering: ${batch.length}`);
+      // Deduplicate by ID (in case API returns duplicates)
+      const uniqueBatch = batch.filter((client) => {
+        if (!client?.id) {
+          logger.warn(`⚠️ Client missing ID on page ${currentPage}`);
+          return false;
+        }
+        if (seenIds.has(client.id)) {
+          logger.debug(`   ⚠️ Duplicate client ID ${client.id} detected on page ${currentPage}, skipping`);
+          return false;
+        }
+        seenIds.add(client.id);
+        return true;
+      });
+
+      const duplicatesCount = batch.length - uniqueBatch.length;
+      if (duplicatesCount > 0) {
+        logger.warn(`⚠️ Found ${duplicatesCount} duplicate client(s) on page ${currentPage}`);
+      }
+
+      logger.debug(`📄 Clients page ${currentPage}: API returned ${originalCount}, after filtering: ${batch.length}, unique: ${uniqueBatch.length}`);
 
       // If API returned nothing, we're done
       if (originalCount === 0) {
@@ -181,12 +202,20 @@ export async function fetchClients({
       // Reset empty page counter if we got results
       consecutiveEmptyPages = 0;
 
-      // Add filtered results (even if empty after filtering, we might have more pages)
-      allClients.push(...batch);
+      // Track filtering differences
+      if (originalCount > batch.length) {
+        const filteredThisPage = originalCount - batch.length;
+        totalFilteredOut += filteredThisPage;
+        logger.debug(`   ℹ️  ${filteredThisPage} client(s) filtered out on page ${currentPage} (status filter)`);
+      }
+
+      // Add unique results only
+      allClients.push(...uniqueBatch);
       pagesFetched += 1;
 
       // Use originalCount (API response size) for pagination decision, not filtered batch size
       // This ensures we continue fetching even if client-side filtering reduced the batch
+      // When we get a partial page (< pageSize), we're done - don't check next page to avoid duplicates
       if (originalCount < pageSize) {
         logger.info(`✅ Reached end of clients at page ${currentPage} (API returned ${originalCount} < ${pageSize})`);
         break;
@@ -197,6 +226,10 @@ export async function fetchClients({
       }
 
       currentPage += 1;
+    }
+
+    if (totalFilteredOut > 0) {
+      logger.info(`ℹ️  Total clients filtered out by status: ${totalFilteredOut}`);
     }
 
     logger.info(`📊 Total clients fetched: ${allClients.length} across ${pagesFetched} pages`);
@@ -316,10 +349,12 @@ export async function fetchCaregivers({
     }
 
     const allCaregivers = [];
+    const seenIds = new Set(); // Track IDs to prevent duplicates
     let currentPage = page ?? 1;
     let pagesFetched = 0;
     let consecutiveEmptyPages = 0; // Track empty pages to detect API issues
     const MAX_CONSECUTIVE_EMPTY = 3; // Stop after 3 consecutive empty pages
+    let totalFilteredOut = 0; // Track how many items were filtered out
 
     while (true) {
       const result = await fetchCaregiverPage({
@@ -332,7 +367,26 @@ export async function fetchCaregivers({
       const batch = result.caregivers;
       const originalCount = result.originalCount;
 
-      logger.debug(`📄 Caregivers page ${currentPage}: API returned ${originalCount}, after filtering: ${batch.length}`);
+      // Deduplicate by ID (in case API returns duplicates)
+      const uniqueBatch = batch.filter((caregiver) => {
+        if (!caregiver?.id) {
+          logger.warn(`⚠️ Caregiver missing ID on page ${currentPage}`);
+          return false;
+        }
+        if (seenIds.has(caregiver.id)) {
+          logger.debug(`   ⚠️ Duplicate caregiver ID ${caregiver.id} detected on page ${currentPage}, skipping`);
+          return false;
+        }
+        seenIds.add(caregiver.id);
+        return true;
+      });
+
+      const duplicatesCount = batch.length - uniqueBatch.length;
+      if (duplicatesCount > 0) {
+        logger.warn(`⚠️ Found ${duplicatesCount} duplicate caregiver(s) on page ${currentPage}`);
+      }
+
+      logger.debug(`📄 Caregivers page ${currentPage}: API returned ${originalCount}, after filtering: ${batch.length}, unique: ${uniqueBatch.length}`);
 
       // If API returned nothing, we're done
       if (originalCount === 0) {
@@ -349,12 +403,20 @@ export async function fetchCaregivers({
       // Reset empty page counter if we got results
       consecutiveEmptyPages = 0;
 
-      // Add filtered results (even if empty after filtering, we might have more pages)
-      allCaregivers.push(...batch);
+      // Track filtering differences
+      if (originalCount > batch.length) {
+        const filteredThisPage = originalCount - batch.length;
+        totalFilteredOut += filteredThisPage;
+        logger.debug(`   ℹ️  ${filteredThisPage} caregiver(s) filtered out on page ${currentPage} (status filter)`);
+      }
+
+      // Add unique results only
+      allCaregivers.push(...uniqueBatch);
       pagesFetched += 1;
 
       // Use originalCount (API response size) for pagination decision, not filtered batch size
       // This ensures we continue fetching even if client-side filtering reduced the batch
+      // When we get a partial page (< pageSize), we're done - don't check next page to avoid duplicates
       if (originalCount < pageSize) {
         logger.info(`✅ Reached end of caregivers at page ${currentPage} (API returned ${originalCount} < ${pageSize})`);
         break;
@@ -365,6 +427,10 @@ export async function fetchCaregivers({
       }
 
       currentPage += 1;
+    }
+
+    if (totalFilteredOut > 0) {
+      logger.info(`ℹ️  Total caregivers filtered out by status: ${totalFilteredOut}`);
     }
 
     logger.info(`📊 Total caregivers fetched: ${allCaregivers.length} across ${pagesFetched} pages`);

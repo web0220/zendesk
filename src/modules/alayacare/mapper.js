@@ -262,7 +262,65 @@ export function mapClientToZendesk(client) {
 
     const emailDetails = collectAllEmailDetails(client, demographics);
     const emails = emailDetails.map((entry) => entry.email);
-    const primaryEmail = emails.length > 0 ? emails[0] : null;
+    
+    // Ensure we have at least one email - use any email found anywhere
+    let primaryEmail = emails.length > 0 ? emails[0] : null;
+    
+    // AGGRESSIVE FALLBACK: If still no email, search the ENTIRE client object for any email
+    if (!primaryEmail) {
+      // Function to recursively search for emails in any object/array
+      const findEmailsInValue = (value, depth = 0) => {
+        if (depth > 5) return []; // Prevent infinite recursion
+        if (!value) return [];
+        
+        const found = [];
+        const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+        
+        if (typeof value === "string") {
+          const matches = value.match(emailPattern);
+          if (matches) {
+            matches.forEach(match => {
+              const candidate = match.trim().toLowerCase();
+              if (isValidEmail(candidate)) {
+                found.push(candidate);
+              }
+            });
+          }
+        } else if (Array.isArray(value)) {
+          value.forEach(item => {
+            found.push(...findEmailsInValue(item, depth + 1));
+          });
+        } else if (typeof value === "object") {
+          Object.values(value).forEach(item => {
+            found.push(...findEmailsInValue(item, depth + 1));
+          });
+        }
+        
+        return found;
+      };
+      
+      // Search entire client object for emails
+      const allFoundEmails = findEmailsInValue(client);
+      
+      // Remove duplicates and validate
+      const uniqueValidEmails = [...new Set(allFoundEmails)].filter(email => isValidEmail(email));
+      
+      if (uniqueValidEmails.length > 0) {
+        primaryEmail = uniqueValidEmails[0];
+        // Add to emails array if not already there
+        uniqueValidEmails.forEach(email => {
+          if (!emails.includes(email)) {
+            emails.push(email);
+          }
+        });
+      }
+    }
+    
+    // CRITICAL: If we found ANY email, ensure it's set as primaryEmail
+    // This is the final check to make sure we never send null email if any email exists
+    if (!primaryEmail && emails.length > 0) {
+      primaryEmail = emails[0];
+    }
 
     const market =
       client.market ||
@@ -306,6 +364,7 @@ export function mapClientToZendesk(client) {
       : [];
 
     // Add secondary emails (all emails except primary) to identities array
+    // If we found an email as fallback, make sure it's not duplicated in identities
     const emailIdentities = emails.length > 1 
       ? emails.slice(1).map((email) => ({
           type: "email",
@@ -354,11 +413,11 @@ export function mapClientToZendesk(client) {
     // Format external_id as AC + zero-padded ID (e.g., AC000000417)
     const externalId = client.id ? `AC${String(client.id).padStart(9, '0')}` : null;
 
-    return {
+    // Build user object - only include email if it exists
+    const userObject = {
       external_id: externalId,
       ac_id: client.id || null,
       name: `${firstName} ${lastName}`.trim() || null,
-      email: primaryEmail,
       phone: primaryPhone,
       organization_id: organizationId,
       identities,
@@ -372,6 +431,13 @@ export function mapClientToZendesk(client) {
         type: "client",
       },
     };
+
+    // Only include email field if we have one (omit it entirely if null/undefined)
+    if (primaryEmail) {
+      userObject.email = primaryEmail;
+    }
+
+    return userObject;
   } catch (err) {
     logger.error("Mapping error (client):", err);
     return null;
@@ -504,7 +570,65 @@ export function mapCaregiverToZendesk(cg) {
 
     const emailDetails = collectCaregiverEmailDetails(cg, demographics);
     const emails = emailDetails.map((entry) => entry.email);
-    const primaryEmail = emails.length > 0 ? emails[0] : null;
+    
+    // Ensure we have at least one email - use any email found anywhere
+    let primaryEmail = emails.length > 0 ? emails[0] : null;
+    
+    // AGGRESSIVE FALLBACK: If still no email, search the ENTIRE caregiver object for any email
+    if (!primaryEmail) {
+      // Function to recursively search for emails in any object/array
+      const findEmailsInValue = (value, depth = 0) => {
+        if (depth > 5) return []; // Prevent infinite recursion
+        if (!value) return [];
+        
+        const found = [];
+        const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+        
+        if (typeof value === "string") {
+          const matches = value.match(emailPattern);
+          if (matches) {
+            matches.forEach(match => {
+              const candidate = match.trim().toLowerCase();
+              if (isValidEmail(candidate)) {
+                found.push(candidate);
+              }
+            });
+          }
+        } else if (Array.isArray(value)) {
+          value.forEach(item => {
+            found.push(...findEmailsInValue(item, depth + 1));
+          });
+        } else if (typeof value === "object") {
+          Object.values(value).forEach(item => {
+            found.push(...findEmailsInValue(item, depth + 1));
+          });
+        }
+        
+        return found;
+      };
+      
+      // Search entire caregiver object for emails
+      const allFoundEmails = findEmailsInValue(cg);
+      
+      // Remove duplicates and validate
+      const uniqueValidEmails = [...new Set(allFoundEmails)].filter(email => isValidEmail(email));
+      
+      if (uniqueValidEmails.length > 0) {
+        primaryEmail = uniqueValidEmails[0];
+        // Add to emails array if not already there
+        uniqueValidEmails.forEach(email => {
+          if (!emails.includes(email)) {
+            emails.push(email);
+          }
+        });
+      }
+    }
+    
+    // CRITICAL: If we found ANY email, ensure it's set as primaryEmail
+    // This is the final check to make sure we never send null email if any email exists
+    if (!primaryEmail && emails.length > 0) {
+      primaryEmail = emails[0];
+    }
 
     const market =
       extractMarket(groups) ||
@@ -542,6 +666,7 @@ export function mapCaregiverToZendesk(cg) {
       : [];
 
     // Add secondary emails (all emails except primary) to identities array
+    // If we found an email as fallback, make sure it's not duplicated in identities
     const emailIdentities = emails.length > 1 
       ? emails.slice(1).map((email) => ({
           type: "email",
@@ -566,11 +691,11 @@ export function mapCaregiverToZendesk(cg) {
     // Format external_id as AC + zero-padded ID (e.g., AC000000417)
     const externalId = cg.id ? `AC${String(cg.id).padStart(9, '0')}` : null;
 
-    return {
+    // Build user object - only include email if it exists
+    const userObject = {
       external_id: externalId,
       ac_id: cg.id || null,
       name: `${firstName} ${lastName}`.trim() || null,
-      email: primaryEmail,
       phone: primaryPhone,
       organization_id: organizationId,
       identities,
@@ -581,6 +706,13 @@ export function mapCaregiverToZendesk(cg) {
         type: "caregiver",
       },
     };
+
+    // Only include email field if we have one (omit it entirely if null/undefined)
+    if (primaryEmail) {
+      userObject.email = primaryEmail;
+    }
+
+    return userObject;
   } catch (err) {
     logger.error("Mapping error (caregiver):", err);
     return null;
