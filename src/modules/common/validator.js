@@ -15,7 +15,7 @@ export function cleanEmail(email) {
   return cleaned;
 }
 
-/**
+/**   
  * Validate email format
  * @param {string} email
  * @returns {boolean}
