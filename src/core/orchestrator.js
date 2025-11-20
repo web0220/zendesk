@@ -10,7 +10,6 @@ import { upsertUserMapping } from "../infrastructure/database.js";
 // 🧠 Main Orchestrator - Runs Full Sync Flow
 // ======================================================
 export async function runSync() {
-  logger.info("🔄 Starting data sync between AlayaCare and Zendesk...");
 
   try {
     // 1️⃣ Fetch clients & caregivers (raw JSON from AlayaCare API)
@@ -56,6 +55,8 @@ export async function runSync() {
 
     let totalMappingsStored = 0;
     let totalIdentitiesSynced = 0;
+    let totalClientsProcessed = 0;
+    let totalCaregiversProcessed = 0;
 
     // 4️⃣ Process batches with concurrency limit
     const tasks = batches.map(
@@ -82,41 +83,95 @@ export async function runSync() {
         // 5️⃣ Store mappings in database
         const syncTimestamp = new Date().toISOString();
         
+        // Create a map of external_id -> userData for reliable matching
+        // Zendesk results might not be in the same order as input, so we match by external_id
+        const batchMap = new Map();
+        batch.forEach(user => {
+          if (user.external_id) {
+            batchMap.set(user.external_id, user);
+          }
+        });
+        
         let batchCreated = 0;
         let batchUpdated = 0;
         let batchFailed = 0;
+        const processedExternalIds = new Set();
         
-        for (let j = 0; j < jobResults.length; j++) {
-          const jobResult = jobResults[j];
-          const userData = batch[j];
+        // Process all results from Zendesk
+        for (const jobResult of jobResults) {
+          const externalId = jobResult.external_id;
+          const userData = externalId ? batchMap.get(externalId) : null;
+          
+          // If we can't match by external_id, try to match by index as fallback
+          // This handles cases where external_id might be missing
+          const fallbackIndex = jobResult.index !== undefined ? jobResult.index : 
+                                (jobResults.indexOf(jobResult) < batch.length ? jobResults.indexOf(jobResult) : null);
+          const matchedUserData = userData || (fallbackIndex !== null ? batch[fallbackIndex] : null);
 
+          if (!matchedUserData) {
+            logger.warn(`⚠️ Cannot match Zendesk result: external_id=${externalId || 'N/A'}, index=${fallbackIndex || 'N/A'}`);
+            batchFailed++;
+            continue;
+          }
+
+          // Skip if we've already processed this external_id (duplicate result)
+          if (externalId && processedExternalIds.has(externalId)) {
+            logger.debug(`   ⏭️  Skipping duplicate result for external_id=${externalId}`);
+            continue;
+          }
+          if (externalId) {
+            processedExternalIds.add(externalId);
+          }
+
+          const userType = matchedUserData.user_fields?.type || "unknown";
+          
           if (jobResult.status === "Created" || jobResult.status === "Updated") {
             if (jobResult.status === "Created") batchCreated++;
             if (jobResult.status === "Updated") batchUpdated++;
             // Store mapping: ac_id -> zendesk_user_id
             const mapping = {
-              ac_id: String(userData.ac_id),
+              ac_id: String(matchedUserData.ac_id),
               zendesk_user_id: jobResult.id,
-              external_id: jobResult.external_id || userData.external_id,
+              external_id: jobResult.external_id || matchedUserData.external_id,
+              mapped_data: matchedUserData,
               last_synced_at: syncTimestamp,
             };
 
             upsertUserMapping(mapping);
             totalMappingsStored++;
+            
+            // Track client vs caregiver counts
+            if (userType === "client") {
+              totalClientsProcessed++;
+            } else if (userType === "caregiver") {
+              totalCaregiversProcessed++;
+            }
 
             logger.debug(
-              `💾 Stored: ac_id=${mapping.ac_id} → zendesk_user_id=${mapping.zendesk_user_id}`
+              `💾 Stored ${userType}: ac_id=${mapping.ac_id} → zendesk_user_id=${mapping.zendesk_user_id}`
             );
 
             // 6️⃣ Sync identities using stored zendesk_user_id
-            await syncUserIdentities(mapping.zendesk_user_id, userData);
+            await syncUserIdentities(mapping.zendesk_user_id, matchedUserData);
             totalIdentitiesSynced++;
           } else {
             batchFailed++;
             logger.warn(
-              `⚠️ Skipping user ${userData.name}: status=${jobResult.status}`
+              `⚠️ Skipping ${userType} ${matchedUserData.name || matchedUserData.external_id || 'unknown'}: status=${jobResult.status}`
             );
           }
+        }
+        
+        // Check if any users from the batch weren't in the results
+        const batchExternalIds = new Set(batch.filter(u => u.external_id).map(u => u.external_id));
+        const missingExternalIds = [...batchExternalIds].filter(id => !processedExternalIds.has(id));
+        if (missingExternalIds.length > 0) {
+          logger.warn(`⚠️ WARNING: Batch ${i + 1} has ${missingExternalIds.length} users not in Zendesk results (may have failed silently)`);
+          missingExternalIds.slice(0, 5).forEach(id => {
+            const missingUser = batchMap.get(id);
+            const userType = missingUser?.user_fields?.type || "unknown";
+            logger.debug(`   - Missing ${userType}: ${missingUser?.name || id} (external_id=${id})`);
+          });
         }
         
         logger.debug(`📊 Batch ${i + 1} summary: ${batchCreated} created, ${batchUpdated} updated, ${batchFailed} failed`);
@@ -131,7 +186,12 @@ export async function runSync() {
     // Final validation: ensure we processed all users
     const totalProcessed = totalMappingsStored;
     const totalExpected = users.length;
+    const expectedClients = users.filter(u => u.user_fields?.type === "client").length;
+    const expectedCaregivers = users.filter(u => u.user_fields?.type === "caregiver").length;
+    
     logger.info(`📊 Summary: ${totalMappingsStored} mappings stored, ${totalIdentitiesSynced} identities synced`);
+    logger.info(`   👥 Clients: ${totalClientsProcessed}/${expectedClients} processed`);
+    logger.info(`   👥 Caregivers: ${totalCaregiversProcessed}/${expectedCaregivers} processed`);
     
     if (totalProcessed < totalExpected * 0.9) {
       logger.error(`❌ CRITICAL: Only processed ${totalProcessed}/${totalExpected} users (${((totalProcessed/totalExpected)*100).toFixed(1)}%). Data loss detected!`);
@@ -139,6 +199,13 @@ export async function runSync() {
       logger.warn(`⚠️ WARNING: Processed ${totalProcessed}/${totalExpected} users. Some users may have failed.`);
     } else {
       logger.info(`✅ Successfully processed all ${totalProcessed} users.`);
+    }
+    
+    // Warn if client processing is significantly lower than expected
+    if (totalClientsProcessed < expectedClients * 0.9) {
+      logger.error(`❌ CRITICAL: Only ${totalClientsProcessed}/${expectedClients} clients processed (${((totalClientsProcessed/expectedClients)*100).toFixed(1)}%). Client sync issue detected!`);
+    } else if (totalClientsProcessed < expectedClients) {
+      logger.warn(`⚠️ WARNING: Only ${totalClientsProcessed}/${expectedClients} clients processed. Some clients may have failed.`);
     }
 
     return {

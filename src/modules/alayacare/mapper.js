@@ -107,6 +107,13 @@ function collectAllPhoneDetails(client = {}) {
   return Array.from(entries.values());
 }
 
+function removeInternalEmails(emails = []) {
+  const INTERNAL_DOMAINS = ["@alvitacare.com", "@alayacare.com"];
+  return emails.filter((email) => 
+    !INTERNAL_DOMAINS.some(domain => email.toLowerCase().endsWith(domain))
+  );
+}
+
 function collectAllEmailDetails(client, demographics = {}) {
   const entries = new Map();
 
@@ -260,8 +267,11 @@ export function mapClientToZendesk(client) {
     const phones = phoneDetails.map((entry) => entry.normalized);
     const primaryPhone = phones.length > 0 ? phones[0] : null;
 
-    const emailDetails = collectAllEmailDetails(client, demographics);
-    const emails = emailDetails.map((entry) => entry.email);
+    let emailDetails = collectAllEmailDetails(client, demographics);
+    let emails = emailDetails.map((entry) => entry.email);
+    emails = removeInternalEmails(emails);
+
+
     
     // Ensure we have at least one email - use any email found anywhere
     let primaryEmail = emails.length > 0 ? emails[0] : null;
