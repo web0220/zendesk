@@ -1,6 +1,8 @@
 import { logger } from "../../config/logger.js";
 import { isValidEmail } from "../common/validator.js";
 
+const DISALLOWED_MARKETS = new Set(["alvitacare"]);
+
 const PHONE_CAPTURE_REGEX =
   /(?:(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4})/g;
 
@@ -243,6 +245,25 @@ function extractSalesRep(tags = []) {
   return tag.replace(/^BD\s*/i, "").trim();
 }
 
+function sanitizeMarketValues(values = []) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return null;
+  }
+
+  const normalized = values
+    .map((value) =>
+      typeof value === "string"
+        ? value.trim().replace(/\s+/g, "_").toLowerCase()
+        : null
+    )
+    .filter(
+      (value) => value && !DISALLOWED_MARKETS.has(value)
+    );
+
+  const unique = Array.from(new Set(normalized));
+  return unique.length > 0 ? unique : null;
+}
+
 export function mapClientToZendesk(client) {
   try {
     const demographics = client.demographics || {};
@@ -357,13 +378,12 @@ export function mapClientToZendesk(client) {
       extractSalesRep(tags) ||
       null;
 
-    // Convert market to array: split by comma, trim, lowercase
-    const marketArray = market
+    const marketValues = Array.isArray(market)
       ? market
-          .split(",")
-          .map((m) => m.trim().replace(/\s+/g, "_").toLowerCase())
-          .filter((m) => m)
-      : null;
+      : typeof market === "string"
+      ? market.split(",")
+      : [];
+    const marketArray = sanitizeMarketValues(marketValues);
 
     // Convert secondary phones (all phones except primary) to identities array
     const phoneIdentities = phones.length > 1 
@@ -648,12 +668,12 @@ export function mapCaregiverToZendesk(cg) {
 
     // MULTISELECT fields (arrays)
     // market, department
-    const marketArray = market
+    const marketValues = Array.isArray(market)
       ? market
-          .split(",")
-          .map((m) => m.trim().toLowerCase())
-          .filter((m) => m)
-      : null;
+      : typeof market === "string"
+      ? market.split(",")
+      : [];
+    const marketArray = sanitizeMarketValues(marketValues);
 
     const departmentArray = departments
       .map((dept) => dept?.name || dept)
