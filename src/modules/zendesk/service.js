@@ -57,7 +57,14 @@ async function addIdentities(userId, identities = []) {
       logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {
       const msg = err.response?.data || err.message;
-      logger.warn(`   ⚠️ Failed to add identity ${identity.value}: ${JSON.stringify(msg)}`);
+      
+      // Check if this is a duplicate error
+      if (isDuplicateError(err)) {
+        logger.info(`   🔄 Duplicate ${identity.type} ${identity.value} detected, adding to contact_address`);
+        await addToContactAddress(userId, identity.value);
+      } else {
+        logger.warn(`   ⚠️ Failed to add identity ${identity.value}: ${JSON.stringify(msg)}`);
+      }
     }
   }
 }
@@ -144,6 +151,93 @@ export async function getUserIdentities(userId) {
 }
 
 // ======================================================
+// 👤 Get user details
+// ======================================================
+export async function getUser(userId) {
+  return withRetry(async () => {
+    const res = await zendeskClient.get(`/users/${userId}.json`);
+    return res.data?.user || null;
+  });
+}
+
+// ======================================================
+// 🔄 Update user custom fields
+// ======================================================
+export async function updateUserCustomFields(userId, userFields) {
+  return withRetry(async () => {
+    const res = await zendeskClient.put(`/users/${userId}.json`, {
+      user: { user_fields: userFields }
+    });
+    return res.data?.user || null;
+  });
+}
+
+// ======================================================
+// 🔍 Check if error is a duplicate value error
+// ======================================================
+function isDuplicateError(err) {
+  const errorData = err.response?.data;
+  if (!errorData) return false;
+  
+  // Check for DuplicateValue error
+  if (errorData.error === "RecordInvalid" && errorData.details?.value) {
+    const valueErrors = Array.isArray(errorData.details.value) 
+      ? errorData.details.value 
+      : [errorData.details.value];
+    
+    return valueErrors.some(error => 
+      error?.error === "DuplicateValue" || 
+      error?.description?.includes("already being used by another user")
+    );
+  }
+  
+  return false;
+}
+
+// ======================================================
+// 📝 Add duplicate contact to contact_address custom field
+// ======================================================
+async function addToContactAddress(userId, contactValue) {
+  try {
+    // Get current user data
+    const user = await getUser(userId);
+    if (!user) {
+      logger.warn(`   ⚠️ Could not fetch user ${userId} to update contact_address`);
+      return;
+    }
+
+    // Get current contact_address value
+    const currentContactAddress = user.user_fields?.contact_address || "";
+    const contacts = currentContactAddress 
+      ? currentContactAddress.split(/\s*,\s*/).filter(Boolean)
+      : [];
+
+    // Check if contact already exists (case-insensitive)
+    const normalizedContact = contactValue.trim();
+    const normalizedContacts = contacts.map(c => c.trim().toLowerCase());
+    
+    if (normalizedContacts.includes(normalizedContact.toLowerCase())) {
+      logger.debug(`   ℹ️  Contact ${normalizedContact} already in contact_address`);
+      return;
+    }
+
+    // Add new contact
+    contacts.push(normalizedContact);
+    const updatedContactAddress = contacts.join(", ");
+
+    // Update user custom fields
+    await updateUserCustomFields(userId, {
+      ...user.user_fields,
+      contact_address: updatedContactAddress
+    });
+
+    logger.info(`   📝 Added ${normalizedContact} to contact_address for user ${userId}`);
+  } catch (err) {
+    logger.warn(`   ⚠️ Failed to update contact_address for user ${userId}: ${err.message}`);
+  }
+}
+
+// ======================================================
 // ➕ Sync user identities (secondary emails & phones)
 // ======================================================
 export async function syncUserIdentities(userId, userData) {
@@ -189,7 +283,14 @@ export async function syncUserIdentities(userId, userData) {
       logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {
       const msg = err.response?.data || err.message;
-      logger.warn(`   ⚠️ Failed to add ${identity.value}: ${JSON.stringify(msg)}`);
+      
+      // Check if this is a duplicate error
+      if (isDuplicateError(err)) {
+        logger.info(`   🔄 Duplicate ${identity.type} ${identity.value} detected, adding to contact_address`);
+        await addToContactAddress(userId, identity.value);
+      } else {
+        logger.warn(`   ⚠️ Failed to add ${identity.value}: ${JSON.stringify(msg)}`);
+      }
     }
   }
 }

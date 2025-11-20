@@ -420,8 +420,8 @@ export function mapClientToZendesk(client) {
       ? 40994316312731  // AlvitaCare members
       : 42824772337179; // Regular clients
 
-    // Format external_id as AC + zero-padded ID (e.g., AC000000417)
-    const externalId = client.id ? `AC${String(client.id).padStart(9, '0')}` : null;
+    // Format external_id as client_ + ac_id (e.g., client_4921)
+    const externalId = client.id ? `client_${client.id}` : null;
 
     // Build user object - only include email if it exists
     const userObject = {
@@ -698,8 +698,8 @@ export function mapCaregiverToZendesk(cg) {
       ? 40994316312731  // AlvitaCare members
       : 43279021546651; // Regular caregivers
 
-    // Format external_id as AC + zero-padded ID (e.g., AC000000417)
-    const externalId = cg.id ? `AC${String(cg.id).padStart(9, '0')}` : null;
+    // Format external_id as caregiver_ + ac_id (e.g., caregiver_4921)
+    const externalId = cg.id ? `caregiver_${cg.id}` : null;
 
     // Build user object - only include email if it exists
     const userObject = {

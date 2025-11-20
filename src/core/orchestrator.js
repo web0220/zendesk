@@ -156,9 +156,33 @@ export async function runSync() {
             totalIdentitiesSynced++;
           } else {
             batchFailed++;
+            const userName = matchedUserData.name || matchedUserData.external_id || 'unknown';
             logger.warn(
-              `⚠️ Skipping ${userType} ${matchedUserData.name || matchedUserData.external_id || 'unknown'}: status=${jobResult.status}`
+              `⚠️ Skipping ${userType} ${userName}: status=${jobResult.status}`
             );
+            
+            // Log detailed mapped data for failed users to help debug
+            logger.warn(`   📋 Failed ${userType} details:`);
+            logger.warn(`      Name: ${matchedUserData.name || 'N/A'}`);
+            logger.warn(`      External ID: ${matchedUserData.external_id || 'N/A'}`);
+            logger.warn(`      AC ID: ${matchedUserData.ac_id || 'N/A'}`);
+            logger.warn(`      Email: ${matchedUserData.email || 'N/A'}`);
+            logger.warn(`      Phone: ${matchedUserData.phone || 'N/A'}`);
+            logger.warn(`      Organization ID: ${matchedUserData.organization_id || 'N/A'}`);
+            logger.warn(`      Identities count: ${matchedUserData.identities?.length || 0}`);
+            if (matchedUserData.identities && matchedUserData.identities.length > 0) {
+              logger.warn(`      Identities: ${JSON.stringify(matchedUserData.identities.map(i => `${i.type}:${i.value}`))}`);
+            }
+            logger.warn(`      User Fields: ${JSON.stringify(matchedUserData.user_fields || {})}`);
+            
+            // Log job result details which may contain error information
+            if (jobResult.errors) {
+              logger.warn(`      Zendesk Errors: ${JSON.stringify(jobResult.errors)}`);
+            }
+            if (jobResult.index !== undefined) {
+              logger.warn(`      Batch Index: ${jobResult.index}`);
+            }
+            logger.warn(`      Full Job Result: ${JSON.stringify(jobResult, null, 2)}`);
           }
         }
         
