@@ -1,8 +1,8 @@
 import { fetchClients, fetchCaregivers } from "../src/modules/alayacare/service.js";
 import { logger } from "../src/config/logger.js";
 
-const DEFAULT_EMAIL = "keema0014@yahoo.com";
-const DEFAULT_ENTITY = "caregiver";
+const DEFAULT_EMAIL = "joenlinv@aol.com";
+const DEFAULT_ENTITY = "client";
 const PAGE_SIZE = Number(process.env.ALAYACARE_PAGE_SIZE) || 100;
 
 function normalizeEmail(email) {

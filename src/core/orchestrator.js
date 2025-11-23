@@ -4,7 +4,12 @@ import { mapClientToZendesk, mapCaregiverToZendesk } from "../modules/alayacare/
 import { bulkUpsertUsers, syncUserIdentities } from "../modules/zendesk/service.js";
 import { chunkArray, runWithLimit } from "../modules/common/rateLimiter.js";
 import { sanitizeUsers } from "../modules/common/validator.js";
-import { upsertUserMapping } from "../infrastructure/database.js";
+import { 
+  saveMappedDataToDatabase, 
+  getUsersPendingSync, 
+  convertDatabaseRowToZendeskUser,
+  updateZendeskUserId 
+} from "../infrastructure/database.js";
 
 // ======================================================
 // 🧠 Main Orchestrator - Runs Full Sync Flow
@@ -41,24 +46,65 @@ export async function runSync() {
     }
 
     const users = sanitizeUsers(allUsers);
-    logger.info(`🧩 Prepared ${users.length} valid users for Zendesk sync (${clientPayload.length} clients + ${caregiverPayload.length} caregivers before sanitization)`);
+    logger.info(`🧩 Prepared ${users.length} valid users (${clientPayload.length} clients + ${caregiverPayload.length} caregivers before sanitization)`);
 
-    // 3️⃣ Batch users to respect Zendesk limits (100 per batch)
-    // Note: Zendesk allows up to 1000 users per bulk call, but we use 100 for safety
-    const batches = chunkArray(users, 100);
-    logger.info(`📦 Split into ${batches.length} batches of up to 100 users each (total: ${users.length} users)`);
+    // 3️⃣ Save ALL mapped data to database FIRST (before sending to Zendesk)
+    logger.info("💾 Saving all mapped data to database...");
+    let savedCount = 0;
+    for (const user of users) {
+      try {
+        saveMappedDataToDatabase(user);
+        savedCount++;
+      } catch (err) {
+        logger.error(`❌ Failed to save user ${user.ac_id} to database: ${err.message}`);
+      }
+    }
+    logger.info(`✅ Saved ${savedCount}/${users.length} users to database`);
+
+    if (savedCount < users.length) {
+      logger.warn(`⚠️ WARNING: Only saved ${savedCount}/${users.length} users to database. Some data may be missing.`);
+    }
+
+    // 4️⃣ Read users from database that need syncing
+    logger.info("📖 Reading users from database for Zendesk sync...");
+    const usersFromDb = getUsersPendingSync();
+    logger.info(`📋 Found ${usersFromDb.length} users in database that need syncing`);
+
+    if (usersFromDb.length === 0) {
+      logger.info("✅ No users pending sync. All users are already synced.");
+      return {
+        totalUsers: users.length,
+        savedToDatabase: savedCount,
+        syncedToZendesk: 0,
+        batches: 0,
+        mappingsStored: 0,
+        identitiesSynced: 0,
+      };
+    }
+
+    // 5️⃣ Convert database rows to Zendesk user format
+    logger.info("🔄 Converting database rows to Zendesk user format...");
+    const zendeskUsers = usersFromDb
+      .map(convertDatabaseRowToZendeskUser)
+      .filter(Boolean);
+    
+    logger.info(`📦 Converted ${zendeskUsers.length} users from database to Zendesk format`);
+
+    // 6️⃣ Batch users to respect Zendesk limits (100 per batch)
+    const batches = chunkArray(zendeskUsers, 100);
+    logger.info(`📦 Split into ${batches.length} batches of up to 100 users each (total: ${zendeskUsers.length} users)`);
     
     // Log batch distribution
     const clientBatches = batches.filter(batch => batch.some(u => u.user_fields?.type === "client")).length;
     const caregiverBatches = batches.filter(batch => batch.some(u => u.user_fields?.type === "caregiver")).length;
     logger.info(`   📋 Batch breakdown: ~${clientBatches} batches with clients, ~${caregiverBatches} batches with caregivers`);
 
-    let totalMappingsStored = 0;
+    let totalMappingsUpdated = 0;
     let totalIdentitiesSynced = 0;
     let totalClientsProcessed = 0;
     let totalCaregiversProcessed = 0;
 
-    // 4️⃣ Process batches with concurrency limit
+    // 7️⃣ Process batches with concurrency limit
     const tasks = batches.map(
       (batch, i) => async () => {
         logger.info(`➡️ Processing batch ${i + 1}/${batches.length}`);
@@ -80,11 +126,10 @@ export async function runSync() {
           logger.warn(`⚠️ WARNING: Batch ${i + 1} result count mismatch! Sent ${batch.length} users, got ${jobResults.length} results`);
         }
 
-        // 5️⃣ Store mappings in database
+        // 8️⃣ Update database with zendesk_user_id (preserve all mapped data)
         const syncTimestamp = new Date().toISOString();
         
         // Create a map of external_id -> userData for reliable matching
-        // Zendesk results might not be in the same order as input, so we match by external_id
         const batchMap = new Map();
         batch.forEach(user => {
           if (user.external_id) {
@@ -103,7 +148,6 @@ export async function runSync() {
           const userData = externalId ? batchMap.get(externalId) : null;
           
           // If we can't match by external_id, try to match by index as fallback
-          // This handles cases where external_id might be missing
           const fallbackIndex = jobResult.index !== undefined ? jobResult.index : 
                                 (jobResults.indexOf(jobResult) < batch.length ? jobResults.indexOf(jobResult) : null);
           const matchedUserData = userData || (fallbackIndex !== null ? batch[fallbackIndex] : null);
@@ -124,21 +168,15 @@ export async function runSync() {
           }
 
           const userType = matchedUserData.user_fields?.type || "unknown";
+          const acId = String(matchedUserData.ac_id);
           
           if (jobResult.status === "Created" || jobResult.status === "Updated") {
             if (jobResult.status === "Created") batchCreated++;
             if (jobResult.status === "Updated") batchUpdated++;
-            // Store mapping: ac_id -> zendesk_user_id
-            const mapping = {
-              ac_id: String(matchedUserData.ac_id),
-              zendesk_user_id: jobResult.id,
-              external_id: jobResult.external_id || matchedUserData.external_id,
-              mapped_data: matchedUserData,
-              last_synced_at: syncTimestamp,
-            };
-
-            upsertUserMapping(mapping);
-            totalMappingsStored++;
+            
+            // Update ONLY zendesk_user_id and last_synced_at (preserve all mapped data)
+            updateZendeskUserId(acId, jobResult.id, syncTimestamp);
+            totalMappingsUpdated++;
             
             // Track client vs caregiver counts
             if (userType === "client") {
@@ -148,11 +186,11 @@ export async function runSync() {
             }
 
             logger.debug(
-              `💾 Stored ${userType}: ac_id=${mapping.ac_id} → zendesk_user_id=${mapping.zendesk_user_id}`
+              `🔄 Updated ${userType}: ac_id=${acId} → zendesk_user_id=${jobResult.id}`
             );
 
-            // 6️⃣ Sync identities using stored zendesk_user_id
-            await syncUserIdentities(mapping.zendesk_user_id, matchedUserData);
+            // 9️⃣ Sync identities using stored zendesk_user_id
+            await syncUserIdentities(jobResult.id, matchedUserData);
             totalIdentitiesSynced++;
           } else {
             batchFailed++;
@@ -208,12 +246,13 @@ export async function runSync() {
     logger.info("✅ All batches submitted and confirmed successfully.");
     
     // Final validation: ensure we processed all users
-    const totalProcessed = totalMappingsStored;
-    const totalExpected = users.length;
-    const expectedClients = users.filter(u => u.user_fields?.type === "client").length;
-    const expectedCaregivers = users.filter(u => u.user_fields?.type === "caregiver").length;
+    const totalProcessed = totalMappingsUpdated;
+    const totalExpected = zendeskUsers.length;
+    const expectedClients = zendeskUsers.filter(u => u.user_fields?.type === "client").length;
+    const expectedCaregivers = zendeskUsers.filter(u => u.user_fields?.type === "caregiver").length;
     
-    logger.info(`📊 Summary: ${totalMappingsStored} mappings stored, ${totalIdentitiesSynced} identities synced`);
+    logger.info(`📊 Summary: ${totalMappingsUpdated} mappings updated, ${totalIdentitiesSynced} identities synced`);
+    logger.info(`   💾 Saved to database: ${savedCount} users`);
     logger.info(`   👥 Clients: ${totalClientsProcessed}/${expectedClients} processed`);
     logger.info(`   👥 Caregivers: ${totalCaregiversProcessed}/${expectedCaregivers} processed`);
     
@@ -234,8 +273,10 @@ export async function runSync() {
 
     return {
       totalUsers: users.length,
+      savedToDatabase: savedCount,
+      syncedToZendesk: zendeskUsers.length,
       batches: results.length,
-      mappingsStored: totalMappingsStored,
+      mappingsStored: totalMappingsUpdated,
       identitiesSynced: totalIdentitiesSynced,
     };
   } catch (err) {

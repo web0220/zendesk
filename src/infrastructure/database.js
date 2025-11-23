@@ -48,7 +48,7 @@ export function initDatabase() {
     db.exec(`
       CREATE TABLE IF NOT EXISTS user_mappings (
         ac_id TEXT PRIMARY KEY,
-        zendesk_user_id INTEGER NOT NULL,
+        zendesk_user_id INTEGER,
         external_id TEXT NOT NULL,
         name TEXT,
         email TEXT,
@@ -67,7 +67,7 @@ export function initDatabase() {
         -- Common fields
         market TEXT,
         identities TEXT,
-        last_synced_at TEXT NOT NULL,
+        last_synced_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
@@ -164,7 +164,88 @@ function extractMappedFields(mappedData) {
 }
 
 /**
- * Store or update user mapping
+ * Store mapped data to database BEFORE sending to Zendesk
+ * This preserves all mapped data and doesn't require zendesk_user_id
+ * If record already exists with zendesk_user_id, mapped data is NOT updated (preserved)
+ * @param {Object} mappedData - Mapped user data from mapper
+ * @returns {void}
+ */
+export function saveMappedDataToDatabase(mappedData) {
+  if (!db) {
+    throw new Error("Database not initialized. Call initDatabase() first.");
+  }
+
+  if (!mappedData || !mappedData.ac_id || !mappedData.external_id) {
+    logger.warn("⚠️ Skipping invalid mapped data (missing ac_id or external_id)");
+    return;
+  }
+
+  const { ac_id, external_id } = mappedData;
+  const fields = extractMappedFields(mappedData);
+
+  // Check if record already exists with zendesk_user_id
+  const existing = db.prepare("SELECT zendesk_user_id FROM user_mappings WHERE ac_id = ?").get(ac_id);
+  
+  if (existing && existing.zendesk_user_id !== null) {
+    // Record already synced - preserve mapped data, don't update
+    logger.debug(`⏭️  Skipping mapped data update for ac_id=${ac_id} (already synced, preserving mapped data)`);
+    return;
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO user_mappings (
+      ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
+      user_type, coordinator_pod, case_rating, client_status, clinical_rn_manager,
+      sales_rep, caregiver_status, department, market, identities,
+      last_synced_at, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(ac_id) DO UPDATE SET
+      -- Only update mapped data fields if zendesk_user_id is NULL (not yet synced)
+      -- If zendesk_user_id exists, preserve all mapped data
+      external_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.external_id ELSE external_id END,
+      name = CASE WHEN zendesk_user_id IS NULL THEN excluded.name ELSE name END,
+      email = CASE WHEN zendesk_user_id IS NULL THEN excluded.email ELSE email END,
+      phone = CASE WHEN zendesk_user_id IS NULL THEN excluded.phone ELSE phone END,
+      organization_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.organization_id ELSE organization_id END,
+      user_type = CASE WHEN zendesk_user_id IS NULL THEN excluded.user_type ELSE user_type END,
+      coordinator_pod = CASE WHEN zendesk_user_id IS NULL THEN excluded.coordinator_pod ELSE coordinator_pod END,
+      case_rating = CASE WHEN zendesk_user_id IS NULL THEN excluded.case_rating ELSE case_rating END,
+      client_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.client_status ELSE client_status END,
+      clinical_rn_manager = CASE WHEN zendesk_user_id IS NULL THEN excluded.clinical_rn_manager ELSE clinical_rn_manager END,
+      sales_rep = CASE WHEN zendesk_user_id IS NULL THEN excluded.sales_rep ELSE sales_rep END,
+      caregiver_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.caregiver_status ELSE caregiver_status END,
+      department = CASE WHEN zendesk_user_id IS NULL THEN excluded.department ELSE department END,
+      market = CASE WHEN zendesk_user_id IS NULL THEN excluded.market ELSE market END,
+      identities = CASE WHEN zendesk_user_id IS NULL THEN excluded.identities ELSE identities END,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
+  stmt.run(
+    ac_id,
+    null, // zendesk_user_id - will be set after Zendesk sync
+    external_id,
+    fields.name,
+    fields.email,
+    fields.phone,
+    fields.organization_id,
+    fields.user_type,
+    fields.coordinator_pod,
+    fields.case_rating,
+    fields.client_status,
+    fields.clinical_rn_manager,
+    fields.sales_rep,
+    fields.caregiver_status,
+    fields.department,
+    fields.market,
+    fields.identities,
+    null // last_synced_at - will be set after Zendesk sync
+  );
+  logger.debug(`💾 Saved mapped data: ac_id=${ac_id}, type=${fields.user_type}`);
+}
+
+/**
+ * Store or update user mapping (legacy function - now only updates zendesk_user_id)
  * @param {Object} mapping - User mapping data
  * @param {string} mapping.ac_id - AlayaCare user ID
  * @param {number} mapping.zendesk_user_id - Zendesk user ID
@@ -307,6 +388,111 @@ export function getAllUserMappings() {
 
   const stmt = db.prepare("SELECT * FROM user_mappings ORDER BY updated_at DESC");
   return stmt.all().map(hydrateMapping);
+}
+
+/**
+ * Get users that need to be synced to Zendesk (where zendesk_user_id is NULL)
+ * @returns {Array<Object>} Users that need syncing
+ */
+export function getUsersPendingSync() {
+  if (!db) {
+    throw new Error("Database not initialized. Call initDatabase() first.");
+  }
+
+  const stmt = db.prepare("SELECT * FROM user_mappings WHERE zendesk_user_id IS NULL ORDER BY created_at ASC");
+  return stmt.all().map(hydrateMapping);
+}
+
+/**
+ * Convert database row to Zendesk user format
+ * @param {Object} row - Database row with hydrated JSON fields
+ * @returns {Object} Zendesk user object
+ */
+export function convertDatabaseRowToZendeskUser(row) {
+  if (!row) return null;
+
+  const userFields = {};
+
+  // Add user_type
+  if (row.user_type) {
+    userFields.type = row.user_type;
+  }
+
+  // Client-specific fields
+  if (row.user_type === "client") {
+    if (row.coordinator_pod) userFields.coordinator_pod = row.coordinator_pod;
+    if (row.case_rating) userFields.case_rating = row.case_rating;
+    if (row.client_status) userFields.client_status = row.client_status;
+    if (row.clinical_rn_manager) userFields.clinical_rn_manager = row.clinical_rn_manager;
+    if (row.sales_rep) userFields.sales_rep = row.sales_rep;
+  }
+
+  // Caregiver-specific fields
+  if (row.user_type === "caregiver") {
+    if (row.caregiver_status) userFields.caregiver_status = row.caregiver_status;
+    if (row.department) userFields.department = row.department;
+  }
+
+  // Common fields
+  if (row.market) userFields.market = row.market;
+
+  // Handle identities - ensure it's an array
+  let identities = [];
+  if (row.identities) {
+    if (Array.isArray(row.identities)) {
+      identities = row.identities;
+    } else if (typeof row.identities === "string") {
+      try {
+        identities = JSON.parse(row.identities);
+      } catch (err) {
+        logger.debug(`⚠️ Failed to parse identities JSON for ac_id=${row.ac_id}`);
+      }
+    }
+  }
+
+  const zendeskUser = {
+    external_id: row.external_id,
+    ac_id: row.ac_id,
+    name: row.name,
+    email: row.email || undefined, // Omit if null
+    phone: row.phone || undefined, // Omit if null
+    organization_id: row.organization_id || undefined, // Omit if null
+    identities: identities,
+    user_fields: userFields,
+  };
+
+  // Remove undefined fields
+  Object.keys(zendeskUser).forEach(key => {
+    if (zendeskUser[key] === undefined) {
+      delete zendeskUser[key];
+    }
+  });
+
+  return zendeskUser;
+}
+
+/**
+ * Update only zendesk_user_id and last_synced_at without changing mapped data
+ * This preserves all mapped data fields
+ * @param {string} ac_id - AlayaCare user ID
+ * @param {number} zendesk_user_id - Zendesk user ID
+ * @param {string} last_synced_at - Last sync timestamp
+ */
+export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at) {
+  if (!db) {
+    throw new Error("Database not initialized. Call initDatabase() first.");
+  }
+
+  const stmt = db.prepare(`
+    UPDATE user_mappings
+    SET zendesk_user_id = ?,
+        last_synced_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id = ?
+  `);
+
+  stmt.run(zendesk_user_id, last_synced_at, ac_id);
+  logger.debug(`🔄 Updated zendesk_user_id: ac_id=${ac_id} → zendesk_user_id=${zendesk_user_id}`);
 }
 
 /**
