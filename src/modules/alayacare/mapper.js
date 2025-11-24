@@ -245,6 +245,14 @@ function extractSalesRep(tags = []) {
   return tag.replace(/^BD\s*/i, "").trim();
 }
 
+function extractZendeskPrimary(tags = []) {
+  const hasPrimaryTag = tags
+    .filter((t) => typeof t === "string")
+    .map((t) => t.trim())
+    .some((t) => t.toLowerCase() === "zendesk primary");
+  return hasPrimaryTag;
+}
+
 function sanitizeMarketValues(values = []) {
   if (!Array.isArray(values) || values.length === 0) {
     return null;
@@ -377,6 +385,9 @@ export function mapClientToZendesk(client) {
       extractSalesRep(tags) ||
       null;
 
+    // Extract zendesk_primary from tags
+    const zendeskPrimary = extractZendeskPrimary(tags);
+
     const marketValues = Array.isArray(market)
       ? market
       : typeof market === "string"
@@ -450,6 +461,7 @@ export function mapClientToZendesk(client) {
       phone: primaryPhone,
       organization_id: organizationId,
       identities,
+      zendesk_primary: zendeskPrimary,
       user_fields: {
         market: marketArray,
         coordinator_pod: coordinatorPodValue,
@@ -592,6 +604,7 @@ export function mapCaregiverToZendesk(cg) {
     const status = cg.status || null;
     const groups = cg.groups || [];
     const departments = cg.departments || [];
+    const tags = cg.tags || [];
 
     const phoneDetails = collectCaregiverPhoneDetails(cg);
     const phones = phoneDetails.map((entry) => entry.normalized);
@@ -680,6 +693,9 @@ export function mapCaregiverToZendesk(cg) {
       .map((name) => name.replace(/\s+/g, "_").toLowerCase());
     const departmentNames = departmentArray.length > 0 ? departmentArray : null;
 
+    // Extract zendesk_primary from tags
+    const zendeskPrimary = extractZendeskPrimary(tags);
+
     // DROP-DOWN fields (single value - string)
     // caregiver_status
     const caregiverStatusValue = status 
@@ -728,6 +744,7 @@ export function mapCaregiverToZendesk(cg) {
       phone: primaryPhone,
       organization_id: organizationId,
       identities,
+      zendesk_primary: zendeskPrimary,
       user_fields: {
         market: marketArray,
         caregiver_status: caregiverStatusValue,

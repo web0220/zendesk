@@ -65,7 +65,17 @@ export async function runSync() {
       logger.warn(`⚠️ WARNING: Only saved ${savedCount}/${users.length} users to database. Some data may be missing.`);
     }
 
-    // 4️⃣ Read users from database that need syncing
+    // 4️⃣ Process duplicate emails and phone numbers
+    logger.info("🔧 Processing duplicate emails and phone numbers...");
+    try {
+      processDuplicateEmailsAndPhones();
+      logger.info("✅ Finished processing duplicates");
+    } catch (err) {
+      logger.error(`❌ Failed to process duplicates: ${err.message}`);
+      throw err;
+    }
+
+    // 5️⃣ Read users from database that need syncing
     logger.info("📖 Reading users from database for Zendesk sync...");
     const usersFromDb = getUsersPendingSync();
     logger.info(`📋 Found ${usersFromDb.length} users in database that need syncing`);
@@ -82,7 +92,7 @@ export async function runSync() {
       };
     }
 
-    // 5️⃣ Convert database rows to Zendesk user format
+    // 6️⃣ Convert database rows to Zendesk user format
     logger.info("🔄 Converting database rows to Zendesk user format...");
     const zendeskUsers = usersFromDb
       .map(convertDatabaseRowToZendeskUser)
@@ -90,7 +100,7 @@ export async function runSync() {
     
     logger.info(`📦 Converted ${zendeskUsers.length} users from database to Zendesk format`);
 
-    // 6️⃣ Batch users to respect Zendesk limits (100 per batch)
+    // 7️⃣ Batch users to respect Zendesk limits (100 per batch)
     const batches = chunkArray(zendeskUsers, 100);
     logger.info(`📦 Split into ${batches.length} batches of up to 100 users each (total: ${zendeskUsers.length} users)`);
     
@@ -104,7 +114,7 @@ export async function runSync() {
     let totalClientsProcessed = 0;
     let totalCaregiversProcessed = 0;
 
-    // 7️⃣ Process batches with concurrency limit
+    // 8️⃣ Process batches with concurrency limit
     const tasks = batches.map(
       (batch, i) => async () => {
         logger.info(`➡️ Processing batch ${i + 1}/${batches.length}`);
@@ -126,7 +136,7 @@ export async function runSync() {
           logger.warn(`⚠️ WARNING: Batch ${i + 1} result count mismatch! Sent ${batch.length} users, got ${jobResults.length} results`);
         }
 
-        // 8️⃣ Update database with zendesk_user_id (preserve all mapped data)
+        // 9️⃣ Update database with zendesk_user_id (preserve all mapped data)
         const syncTimestamp = new Date().toISOString();
         
         // Create a map of external_id -> userData for reliable matching
@@ -189,7 +199,7 @@ export async function runSync() {
               `🔄 Updated ${userType}: ac_id=${acId} → zendesk_user_id=${jobResult.id}`
             );
 
-            // 9️⃣ Sync identities using stored zendesk_user_id
+            // 🔟 Sync identities using stored zendesk_user_id
             await syncUserIdentities(jobResult.id, matchedUserData);
             totalIdentitiesSynced++;
           } else {

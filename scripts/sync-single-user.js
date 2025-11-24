@@ -8,11 +8,16 @@ import {
   mapCaregiverToZendesk,
 } from "../src/modules/alayacare/mapper.js";
 import { sanitizeUsers } from "../src/modules/common/validator.js";
-import { upsertSingleUser } from "../src/modules/zendesk/service.js";
+import { upsertSingleUser, syncUserIdentities } from "../src/modules/zendesk/service.js";
 import {
   initDatabase,
   closeDatabase,
-  upsertUserMapping,
+  saveMappedDataToDatabase,
+  processDuplicateEmailsAndPhones,
+  getUsersPendingSync,
+  getUserMappingByAcId,
+  convertDatabaseRowToZendeskUser,
+  updateZendeskUserId,
 } from "../src/infrastructure/database.js";
 
 function printUsage() {
@@ -96,25 +101,79 @@ async function main() {
     }
 
     const [user] = sanitized;
+    
+    // 1️⃣ Check if user already exists in database
+    const acId = String(user.ac_id);
+    const existingUser = getUserMappingByAcId(acId);
+    const isResync = existingUser && existingUser.zendesk_user_id !== null;
+    
+    if (isResync) {
+      logger.info(`🔄 User ${acId} already synced (zendesk_user_id: ${existingUser.zendesk_user_id}). Re-syncing...`);
+    }
+
+    // 2️⃣ Save mapped data to database first (will skip if already synced, but that's OK)
+    logger.info("💾 Saving mapped data to database...");
+    saveMappedDataToDatabase(user);
+    logger.info("✅ Saved mapped data to database");
+
+    // 3️⃣ Process duplicate emails and phone numbers
+    logger.info("🔧 Processing duplicate emails and phone numbers...");
+    try {
+      processDuplicateEmailsAndPhones();
+      logger.info("✅ Finished processing duplicates");
+    } catch (err) {
+      logger.warn(`⚠️ Failed to process duplicates: ${err.message}`);
+      // Continue even if duplicate processing fails
+    }
+
+    // 4️⃣ Read user from database (after duplicate processing)
+    logger.info("📖 Reading user from database...");
+    let userFromDb;
+    
+    if (isResync) {
+      // If re-syncing, get the user directly (even if already synced)
+      userFromDb = getUserMappingByAcId(acId);
+    } else {
+      // If new sync, get from pending sync list
+      const usersFromDb = getUsersPendingSync();
+      userFromDb = usersFromDb.find(u => String(u.ac_id) === acId);
+    }
+    
+    if (!userFromDb) {
+      logger.error(`❌ User not found in database. Searched for ac_id: ${acId}`);
+      if (!isResync) {
+        const usersFromDb = getUsersPendingSync();
+        logger.error(`   Available users pending sync: ${usersFromDb.map(u => u.ac_id).join(", ")}`);
+      }
+      throw new Error("User not found in database after saving. This should not happen.");
+    }
+
+    // 4️⃣ Convert database row to Zendesk user format
+    logger.info("🔄 Converting database row to Zendesk user format...");
+    const zendeskUser = convertDatabaseRowToZendeskUser(userFromDb);
+    
+    if (!zendeskUser) {
+      throw new Error("Failed to convert database row to Zendesk format.");
+    }
+
     logger.info(
-      `📨 Sending ${targetType} ${user.name || user.external_id} to Zendesk...`
+      `📨 Sending ${targetType} ${zendeskUser.name || zendeskUser.external_id} to Zendesk...`
     );
     logger.info("📤 Mapped Data (ready to send to Zendesk):");
-    logger.info(JSON.stringify(user, null, 2));
+    logger.info(JSON.stringify(zendeskUser, null, 2));
 
-    const upsertResult = await upsertSingleUser(user);
+    // 5️⃣ Send to Zendesk
+    const upsertResult = await upsertSingleUser(zendeskUser);
     if (!upsertResult?.userId) {
       throw new Error("Zendesk upsert did not return a user ID.");
     }
 
-    const mapping = {
-      ac_id: String(user.ac_id),
-      zendesk_user_id: upsertResult.userId,
-      external_id: user.external_id,
-      mapped_data: user,
-      last_synced_at: new Date().toISOString(),
-    };
-    upsertUserMapping(mapping);
+    // 6️⃣ Sync identities
+    await syncUserIdentities(upsertResult.userId, zendeskUser);
+
+    // 7️⃣ Update database with zendesk_user_id
+    const syncTimestamp = new Date().toISOString();
+    updateZendeskUserId(String(user.ac_id), upsertResult.userId, syncTimestamp);
 
     logger.info(
       `✅ Sync complete! Zendesk user ID: ${upsertResult.userId}, AC ID: ${user.ac_id}`
