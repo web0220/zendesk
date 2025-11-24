@@ -101,10 +101,11 @@ async function main() {
     }
 
     const [user] = sanitized;
+    const userType = user.user_fields?.type || targetType;
     
     // 1️⃣ Check if user already exists in database
     const acId = String(user.ac_id);
-    const existingUser = getUserMappingByAcId(acId);
+    const existingUser = getUserMappingByAcId(acId, userType);
     const isResync = existingUser && existingUser.zendesk_user_id !== null;
     
     if (isResync) {
@@ -132,11 +133,13 @@ async function main() {
     
     if (isResync) {
       // If re-syncing, get the user directly (even if already synced)
-      userFromDb = getUserMappingByAcId(acId);
+      userFromDb = getUserMappingByAcId(acId, userType);
     } else {
       // If new sync, get from pending sync list
       const usersFromDb = getUsersPendingSync();
-      userFromDb = usersFromDb.find(u => String(u.ac_id) === acId);
+      userFromDb = usersFromDb.find(
+        (u) => String(u.source_ac_id || u.ac_id) === acId
+      );
     }
     
     if (!userFromDb) {
@@ -173,7 +176,12 @@ async function main() {
 
     // 7️⃣ Update database with zendesk_user_id
     const syncTimestamp = new Date().toISOString();
-    updateZendeskUserId(String(user.ac_id), upsertResult.userId, syncTimestamp);
+    updateZendeskUserId(
+      String(user.ac_id),
+      upsertResult.userId,
+      syncTimestamp,
+      userType
+    );
 
     logger.info(
       `✅ Sync complete! Zendesk user ID: ${upsertResult.userId}, AC ID: ${user.ac_id}`

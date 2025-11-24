@@ -189,7 +189,7 @@ export async function runSync() {
             if (jobResult.status === "Updated") batchUpdated++;
             
             // Update ONLY zendesk_user_id and last_synced_at (preserve all mapped data)
-            updateZendeskUserId(acId, jobResult.id, syncTimestamp);
+            updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType);
             totalMappingsUpdated++;
             
             // Track client vs caregiver counts

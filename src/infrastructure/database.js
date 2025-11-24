@@ -60,6 +60,7 @@ export function initDatabase() {
         phone TEXT,
         organization_id INTEGER,
         user_type TEXT,
+        source_ac_id TEXT,
         -- Client-specific fields
         coordinator_pod TEXT,
         case_rating TEXT,
@@ -99,6 +100,7 @@ export function initDatabase() {
       { name: "identities", def: "identities TEXT" },
       { name: "zendesk_primary", def: "zendesk_primary INTEGER DEFAULT 0" },
       { name: "shared_phone_number", def: "shared_phone_number TEXT" },
+      { name: "source_ac_id", def: "source_ac_id TEXT" },
     ];
 
     columnsToAdd.forEach(({ name, def }) => {
@@ -132,7 +134,7 @@ function initializePreparedStatements() {
   insertMappedDataStmt = db.prepare(`
     INSERT INTO user_mappings (
       ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
-      user_type, coordinator_pod, case_rating, client_status, clinical_rn_manager,
+      user_type, source_ac_id, coordinator_pod, case_rating, client_status, clinical_rn_manager,
       sales_rep, caregiver_status, department, market, identities, zendesk_primary,
       shared_phone_number, last_synced_at, created_at, updated_at
     )
@@ -144,6 +146,7 @@ function initializePreparedStatements() {
       phone = CASE WHEN zendesk_user_id IS NULL THEN excluded.phone ELSE phone END,
       organization_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.organization_id ELSE organization_id END,
       user_type = CASE WHEN zendesk_user_id IS NULL THEN excluded.user_type ELSE user_type END,
+      source_ac_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.source_ac_id ELSE source_ac_id END,
       coordinator_pod = CASE WHEN zendesk_user_id IS NULL THEN excluded.coordinator_pod ELSE coordinator_pod END,
       case_rating = CASE WHEN zendesk_user_id IS NULL THEN excluded.case_rating ELSE case_rating END,
       client_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.client_status ELSE client_status END,
@@ -169,6 +172,42 @@ function initializePreparedStatements() {
     }
     return changed;
   });
+}
+
+function determineUserTypeForStorage(mappedData, fields) {
+  return (
+    fields.user_type ||
+    mappedData.user_fields?.type ||
+    mappedData.user_type ||
+    null
+  );
+}
+
+function buildAcKeyFromParts(sourceAcId, userType) {
+  const typeSlug = (userType || "unknown").toLowerCase();
+  return `${typeSlug}_${sourceAcId}`;
+}
+
+function buildStorageKeys(mappedData, fields) {
+  const sourceAcId = String(mappedData.ac_id);
+  const userType = determineUserTypeForStorage(mappedData, fields);
+  const acKey = buildAcKeyFromParts(sourceAcId, userType);
+  return { acKey, sourceAcId, userType };
+}
+
+function normalizeAcLookupKey(ac_id, userType) {
+  if (ac_id === undefined || ac_id === null) return null;
+  const raw = String(ac_id);
+  if (raw.includes("_")) {
+    const parts = raw.split("_");
+    const typePart = parts.shift();
+    const sourcePart = parts.join("_");
+    return buildAcKeyFromParts(sourcePart, typePart);
+  }
+  if (userType) {
+    return buildAcKeyFromParts(raw, userType);
+  }
+  return null;
 }
 
 /**
@@ -243,22 +282,21 @@ function saveMappedDataInternal(mappedData) {
     return false;
   }
 
-  // Ensure ac_id is a string for consistent database storage
-  const ac_id = String(mappedData.ac_id);
-  const external_id = mappedData.external_id;
   const fields = extractMappedFields(mappedData);
+  const { acKey, sourceAcId } = buildStorageKeys(mappedData, fields);
+  const external_id = mappedData.external_id;
 
-  const existing = selectZendeskIdStmt.get(ac_id);
+  const existing = selectZendeskIdStmt.get(acKey);
 
   if (existing && existing.zendesk_user_id !== null) {
     logger.debug(
-      `⏭️  Skipping mapped data update for ac_id=${ac_id} (already synced, preserving mapped data)`
+      `⏭️  Skipping mapped data update for ac_id=${acKey} (already synced, preserving mapped data)`
     );
     return false;
   }
 
   insertMappedDataStmt.run(
-    ac_id,
+    acKey,
     null,
     external_id,
     fields.name,
@@ -266,6 +304,7 @@ function saveMappedDataInternal(mappedData) {
     fields.phone,
     fields.organization_id,
     fields.user_type,
+    sourceAcId,
     fields.coordinator_pod,
     fields.case_rating,
     fields.client_status,
@@ -279,7 +318,9 @@ function saveMappedDataInternal(mappedData) {
     null,
     null
   );
-  logger.debug(`💾 Saved mapped data: ac_id=${ac_id} (type: ${typeof ac_id}), type=${fields.user_type}`);
+  logger.debug(
+    `💾 Saved mapped data: ac_id=${acKey}, source_ac_id=${sourceAcId}, type=${fields.user_type}`
+  );
   return true;
 }
 
@@ -408,13 +449,16 @@ function hydrateMapping(row) {
  * @param {string} ac_id - AlayaCare user ID
  * @returns {Object|null} User mapping or null if not found
  */
-export function getUserMappingByAcId(ac_id) {
+export function getUserMappingByAcId(ac_id, userType) {
   if (!db) {
     throw new Error("Database not initialized. Call initDatabase() first.");
   }
 
-  const stmt = db.prepare("SELECT * FROM user_mappings WHERE ac_id = ?");
-  const row = stmt.get(ac_id);
+  const lookupKey = normalizeAcLookupKey(ac_id, userType);
+  const stmt = db.prepare(
+    "SELECT * FROM user_mappings WHERE ac_id = ? OR source_ac_id = ?"
+  );
+  const row = stmt.get(lookupKey || "__ac_lookup__", String(ac_id));
   return hydrateMapping(row) || null;
 }
 
@@ -692,7 +736,16 @@ export function getUsersPendingSync() {
 
   const stmt = db.prepare("SELECT * FROM user_mappings WHERE zendesk_user_id IS NULL ORDER BY created_at ASC");
   const users = stmt.all().map(hydrateMapping);
-  logger.debug(`📋 Found ${users.length} users pending sync: ${users.map(u => `ac_id=${u.ac_id}`).join(", ")}`);
+  logger.debug(
+    `📋 Found ${users.length} users pending sync: ${users
+      .map(
+        (u) =>
+          `ac_id=${u.ac_id}, source=${u.source_ac_id || "n/a"}, type=${
+            u.user_type || "unknown"
+          }`
+      )
+      .join(" | ")}`
+  );
   return users;
 }
 
@@ -755,7 +808,7 @@ export function convertDatabaseRowToZendeskUser(row) {
 
   const zendeskUser = {
     external_id: row.external_id,
-    ac_id: row.ac_id,
+    ac_id: row.source_ac_id || row.ac_id,
     name: row.name,
     email: row.email || undefined, // Omit if null
     phone: row.phone || undefined, // Omit if null
@@ -782,21 +835,40 @@ export function convertDatabaseRowToZendeskUser(row) {
  * @param {number} zendesk_user_id - Zendesk user ID
  * @param {string} last_synced_at - Last sync timestamp
  */
-export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at) {
+export function updateZendeskUserId(
+  ac_id,
+  zendesk_user_id,
+  last_synced_at,
+  userType
+) {
   if (!db) {
     throw new Error("Database not initialized. Call initDatabase() first.");
   }
 
+  const lookupKey = normalizeAcLookupKey(ac_id, userType);
   const stmt = db.prepare(`
     UPDATE user_mappings
     SET zendesk_user_id = ?,
         last_synced_at = ?,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
+    WHERE ac_id = ? OR source_ac_id = ?
   `);
 
-  stmt.run(zendesk_user_id, last_synced_at, ac_id);
-  logger.debug(`🔄 Updated zendesk_user_id: ac_id=${ac_id} → zendesk_user_id=${zendesk_user_id}`);
+  const result = stmt.run(
+    zendesk_user_id,
+    last_synced_at,
+    lookupKey || "__ac_lookup__",
+    String(ac_id)
+  );
+  if (result.changes === 0) {
+    logger.warn(
+      `⚠️  Could not update zendesk_user_id for ac_id=${ac_id} (lookupKey=${lookupKey}). Record not found.`
+    );
+  } else {
+    logger.debug(
+      `🔄 Updated zendesk_user_id: ac_id=${ac_id} (lookup=${lookupKey}) → zendesk_user_id=${zendesk_user_id}`
+    );
+  }
 }
 
 /**
