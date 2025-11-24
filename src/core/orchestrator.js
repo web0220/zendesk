@@ -4,11 +4,13 @@ import { mapClientToZendesk, mapCaregiverToZendesk } from "../modules/alayacare/
 import { bulkUpsertUsers, syncUserIdentities } from "../modules/zendesk/service.js";
 import { chunkArray, runWithLimit } from "../modules/common/rateLimiter.js";
 import { sanitizeUsers } from "../modules/common/validator.js";
-import { 
-  saveMappedDataToDatabase, 
-  getUsersPendingSync, 
+import {
+  saveMappedUsersBatch,
+  hasUsersPendingSync,
+  getUsersPendingSync,
   convertDatabaseRowToZendeskUser,
-  updateZendeskUserId 
+  updateZendeskUserId,
+  processDuplicateEmailsAndPhones,
 } from "../infrastructure/database.js";
 
 // ======================================================
@@ -51,28 +53,30 @@ export async function runSync() {
     // 3️⃣ Save ALL mapped data to database FIRST (before sending to Zendesk)
     logger.info("💾 Saving all mapped data to database...");
     let savedCount = 0;
-    for (const user of users) {
-      try {
-        saveMappedDataToDatabase(user);
-        savedCount++;
-      } catch (err) {
-        logger.error(`❌ Failed to save user ${user.ac_id} to database: ${err.message}`);
-      }
+    try {
+      savedCount = saveMappedUsersBatch(users);
+      logger.info(`✅ Saved ${savedCount}/${users.length} users to database`);
+    } catch (err) {
+      logger.error("❌ Failed to save mapped data batch:", err);
+      throw err;
     }
-    logger.info(`✅ Saved ${savedCount}/${users.length} users to database`);
-
     if (savedCount < users.length) {
       logger.warn(`⚠️ WARNING: Only saved ${savedCount}/${users.length} users to database. Some data may be missing.`);
     }
 
     // 4️⃣ Process duplicate emails and phone numbers
-    logger.info("🔧 Processing duplicate emails and phone numbers...");
-    try {
-      processDuplicateEmailsAndPhones();
-      logger.info("✅ Finished processing duplicates");
-    } catch (err) {
-      logger.error(`❌ Failed to process duplicates: ${err.message}`);
-      throw err;
+    const shouldProcessDuplicates = savedCount > 0 || hasUsersPendingSync();
+    if (shouldProcessDuplicates) {
+      logger.info("🔧 Processing duplicate emails and phone numbers...");
+      try {
+        processDuplicateEmailsAndPhones();
+        logger.info("✅ Finished processing duplicates");
+      } catch (err) {
+        logger.error(`❌ Failed to process duplicates: ${err.message}`);
+        throw err;
+      }
+    } else {
+      logger.info("⏭️ Skipping duplicate processing (no pending users)");
     }
 
     // 5️⃣ Read users from database that need syncing

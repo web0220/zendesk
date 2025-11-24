@@ -1,11 +1,19 @@
 import axios from "axios";
 import { config } from "../../config/index.js";
 import { logger } from "../../config/logger.js";
+import { runWithLimit } from "../common/rateLimiter.js";
+import { withRetry } from "../common/retry.js";
 
 // build "Basic base64(public:private)" auth
 const basicAuth = Buffer.from(
   `${config.alayacare.publicKey}:${config.alayacare.privateKey}`
 ).toString("base64");
+
+const DETAIL_CONCURRENCY =
+  Number(process.env.ALAYACARE_DETAIL_CONCURRENCY) || 10;
+const DETAIL_RETRIES = Number(process.env.ALAYACARE_DETAIL_RETRIES) || 3;
+const DETAIL_RETRY_DELAY =
+  Number(process.env.ALAYACARE_DETAIL_RETRY_DELAY) || 1000;
 
 export const alayaClient = axios.create({
   baseURL: config.alayacare.baseUrl, // https://alvitacare.alayacare.com/ext/api/v2
@@ -14,11 +22,17 @@ export const alayaClient = axios.create({
   },
 });
 
+function requestWithRetry(fn) {
+  return withRetry(fn, DETAIL_RETRIES, DETAIL_RETRY_DELAY);
+}
+
 /**
  * Fetch full client detail (includes demographics, groups, tags)
  */
 export async function fetchClientDetail(id) {
-  const { data } = await alayaClient.get(`/patients/clients/${id}`);
+  const { data } = await requestWithRetry(() =>
+    alayaClient.get(`/patients/clients/${id}`)
+  );
   return data;
 }
 
@@ -35,7 +49,9 @@ async function fetchClientPage({ page, count, status, includeDetails }) {
   const params = { page, count };
   if (status) params.status = status;
 
-  const res = await alayaClient.get(`/patients/clients/`, { params });
+  const res = await requestWithRetry(() =>
+    alayaClient.get(`/patients/clients/`, { params })
+  );
   let clients = res.data?.items || res.data || [];
   const originalCount = clients.length; // Track original API response size
 
@@ -47,8 +63,11 @@ async function fetchClientPage({ page, count, status, includeDetails }) {
   }
 
   if (includeDetails && clients.length) {
-    logger.info(`📞 Fetching details for ${clients.length} clients...`);
-    const details = await Promise.all(clients.map((c) => fetchClientDetail(c.id)));
+    const tasks = clients.map((c) => async () => fetchClientDetail(c.id));
+    logger.info(
+      `📞 Fetching details for ${clients.length} clients with rate limiting (concurrency: ${DETAIL_CONCURRENCY})...`
+    );
+    const details = await runWithLimit(tasks, DETAIL_CONCURRENCY);
 
     // Merge detail + derived fields into each client
     clients = clients.map((c, i) => {
@@ -197,10 +216,15 @@ export async function fetchClients({
  */
 export async function fetchCaregiverDetail(caregiverId) {
   try {
-    const res = await alayaClient.get(`/employees/employees/${caregiverId}`);
+    const res = await requestWithRetry(() =>
+      alayaClient.get(`/employees/employees/${caregiverId}`)
+    );
     return res.data;
   } catch (err) {
-    logger.warn(`Failed to fetch detail for caregiver ${caregiverId}:`, err.message);
+    logger.warn(
+      `Failed to fetch detail for caregiver ${caregiverId}:`,
+      err.message
+    );
     return null;
   }
 }
@@ -222,7 +246,9 @@ async function fetchCaregiverPage({ page, count, status, includeDetails }) {
     params.status = status;
   }
 
-  const res = await alayaClient.get("/employees/employees/", { params });
+  const res = await requestWithRetry(() =>
+    alayaClient.get("/employees/employees/", { params })
+  );
   let caregivers = res.data?.items || res.data || [];
   const originalCount = caregivers.length; // Track original API response size
 
@@ -234,10 +260,11 @@ async function fetchCaregiverPage({ page, count, status, includeDetails }) {
   }
 
   if (includeDetails && caregivers.length > 0) {
-    logger.info(`📞 Fetching details for ${caregivers.length} caregivers...`);
-    const details = await Promise.all(
-      caregivers.map((cg) => fetchCaregiverDetail(cg.id))
+    const tasks = caregivers.map((cg) => async () => fetchCaregiverDetail(cg.id));
+    logger.info(
+      `📞 Fetching details for ${caregivers.length} caregivers with rate limiting (concurrency: ${DETAIL_CONCURRENCY})...`
     );
+    const details = await runWithLimit(tasks, DETAIL_CONCURRENCY);
 
     caregivers = caregivers.map((c, i) => {
       const d = details[i] || {};

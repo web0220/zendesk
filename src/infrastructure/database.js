@@ -6,6 +6,9 @@ import { logger } from "../config/logger.js";
 const DB_PATH = path.resolve("data", "sync.db");
 
 let db;
+let insertMappedDataStmt;
+let selectZendeskIdStmt;
+let saveBatchTransaction;
 
 function ensureColumnExists(tableName, columnName, columnDefinition) {
   const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
@@ -42,6 +45,8 @@ export function initDatabase() {
     }
 
     db = new Database(DB_PATH);
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
     logger.info(`📂 Database initialized at ${DB_PATH}`);
 
     // Create user_mappings table with all mapped data fields 
@@ -113,10 +118,57 @@ export function initDatabase() {
     ensureIndexExists("idx_caregiver_status", "CREATE INDEX IF NOT EXISTS idx_caregiver_status ON user_mappings(caregiver_status)");
 
     logger.info("✅ Database tables initialized");
+
+    initializePreparedStatements();
   } catch (err) {
     logger.error("❌ Database initialization failed:", err);
     throw err;
   }
+}
+
+function initializePreparedStatements() {
+  if (!db) return;
+
+  insertMappedDataStmt = db.prepare(`
+    INSERT INTO user_mappings (
+      ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
+      user_type, coordinator_pod, case_rating, client_status, clinical_rn_manager,
+      sales_rep, caregiver_status, department, market, identities, zendesk_primary,
+      shared_phone_number, last_synced_at, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(ac_id) DO UPDATE SET
+      external_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.external_id ELSE external_id END,
+      name = CASE WHEN zendesk_user_id IS NULL THEN excluded.name ELSE name END,
+      email = CASE WHEN zendesk_user_id IS NULL THEN excluded.email ELSE email END,
+      phone = CASE WHEN zendesk_user_id IS NULL THEN excluded.phone ELSE phone END,
+      organization_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.organization_id ELSE organization_id END,
+      user_type = CASE WHEN zendesk_user_id IS NULL THEN excluded.user_type ELSE user_type END,
+      coordinator_pod = CASE WHEN zendesk_user_id IS NULL THEN excluded.coordinator_pod ELSE coordinator_pod END,
+      case_rating = CASE WHEN zendesk_user_id IS NULL THEN excluded.case_rating ELSE case_rating END,
+      client_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.client_status ELSE client_status END,
+      clinical_rn_manager = CASE WHEN zendesk_user_id IS NULL THEN excluded.clinical_rn_manager ELSE clinical_rn_manager END,
+      sales_rep = CASE WHEN zendesk_user_id IS NULL THEN excluded.sales_rep ELSE sales_rep END,
+      caregiver_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.caregiver_status ELSE caregiver_status END,
+      department = CASE WHEN zendesk_user_id IS NULL THEN excluded.department ELSE department END,
+      market = CASE WHEN zendesk_user_id IS NULL THEN excluded.market ELSE market END,
+      identities = CASE WHEN zendesk_user_id IS NULL THEN excluded.identities ELSE identities END,
+      zendesk_primary = CASE WHEN zendesk_user_id IS NULL THEN excluded.zendesk_primary ELSE zendesk_primary END,
+      shared_phone_number = CASE WHEN zendesk_user_id IS NULL THEN excluded.shared_phone_number ELSE shared_phone_number END,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
+  selectZendeskIdStmt = db.prepare("SELECT zendesk_user_id FROM user_mappings WHERE ac_id = ?");
+
+  saveBatchTransaction = db.transaction((batch) => {
+    let changed = 0;
+    for (const mappedData of batch) {
+      if (saveMappedDataInternal(mappedData)) {
+        changed += 1;
+      }
+    }
+    return changed;
+  });
 }
 
 /**
@@ -179,10 +231,16 @@ export function saveMappedDataToDatabase(mappedData) {
   if (!db) {
     throw new Error("Database not initialized. Call initDatabase() first.");
   }
+  if (!insertMappedDataStmt || !selectZendeskIdStmt) {
+    initializePreparedStatements();
+  }
+  return saveMappedDataInternal(mappedData);
+}
 
+function saveMappedDataInternal(mappedData) {
   if (!mappedData || !mappedData.ac_id || !mappedData.external_id) {
     logger.warn("⚠️ Skipping invalid mapped data (missing ac_id or external_id)");
-    return;
+    return false;
   }
 
   // Ensure ac_id is a string for consistent database storage
@@ -190,49 +248,18 @@ export function saveMappedDataToDatabase(mappedData) {
   const external_id = mappedData.external_id;
   const fields = extractMappedFields(mappedData);
 
-  // Check if record already exists with zendesk_user_id
-  const existing = db.prepare("SELECT zendesk_user_id FROM user_mappings WHERE ac_id = ?").get(ac_id);
-  
+  const existing = selectZendeskIdStmt.get(ac_id);
+
   if (existing && existing.zendesk_user_id !== null) {
-    // Record already synced - preserve mapped data, don't update
-    logger.debug(`⏭️  Skipping mapped data update for ac_id=${ac_id} (already synced, preserving mapped data)`);
-    return;
+    logger.debug(
+      `⏭️  Skipping mapped data update for ac_id=${ac_id} (already synced, preserving mapped data)`
+    );
+    return false;
   }
 
-  const stmt = db.prepare(`
-    INSERT INTO user_mappings (
-      ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
-      user_type, coordinator_pod, case_rating, client_status, clinical_rn_manager,
-      sales_rep, caregiver_status, department, market, identities, zendesk_primary,
-      shared_phone_number, last_synced_at, created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    ON CONFLICT(ac_id) DO UPDATE SET
-      -- Only update mapped data fields if zendesk_user_id is NULL (not yet synced)
-      -- If zendesk_user_id exists, preserve all mapped data
-      external_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.external_id ELSE external_id END,
-      name = CASE WHEN zendesk_user_id IS NULL THEN excluded.name ELSE name END,
-      email = CASE WHEN zendesk_user_id IS NULL THEN excluded.email ELSE email END,
-      phone = CASE WHEN zendesk_user_id IS NULL THEN excluded.phone ELSE phone END,
-      organization_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.organization_id ELSE organization_id END,
-      user_type = CASE WHEN zendesk_user_id IS NULL THEN excluded.user_type ELSE user_type END,
-      coordinator_pod = CASE WHEN zendesk_user_id IS NULL THEN excluded.coordinator_pod ELSE coordinator_pod END,
-      case_rating = CASE WHEN zendesk_user_id IS NULL THEN excluded.case_rating ELSE case_rating END,
-      client_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.client_status ELSE client_status END,
-      clinical_rn_manager = CASE WHEN zendesk_user_id IS NULL THEN excluded.clinical_rn_manager ELSE clinical_rn_manager END,
-      sales_rep = CASE WHEN zendesk_user_id IS NULL THEN excluded.sales_rep ELSE sales_rep END,
-      caregiver_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.caregiver_status ELSE caregiver_status END,
-      department = CASE WHEN zendesk_user_id IS NULL THEN excluded.department ELSE department END,
-      market = CASE WHEN zendesk_user_id IS NULL THEN excluded.market ELSE market END,
-      identities = CASE WHEN zendesk_user_id IS NULL THEN excluded.identities ELSE identities END,
-      zendesk_primary = CASE WHEN zendesk_user_id IS NULL THEN excluded.zendesk_primary ELSE zendesk_primary END,
-      shared_phone_number = CASE WHEN zendesk_user_id IS NULL THEN excluded.shared_phone_number ELSE shared_phone_number END,
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
-  stmt.run(
+  insertMappedDataStmt.run(
     ac_id,
-    null, // zendesk_user_id - will be set after Zendesk sync
+    null,
     external_id,
     fields.name,
     fields.email,
@@ -249,18 +276,24 @@ export function saveMappedDataToDatabase(mappedData) {
     fields.market,
     fields.identities,
     fields.zendesk_primary,
-    null, // shared_phone_number - will be set during duplicate processing
-    null // last_synced_at - will be set after Zendesk sync
+    null,
+    null
   );
   logger.debug(`💾 Saved mapped data: ac_id=${ac_id} (type: ${typeof ac_id}), type=${fields.user_type}`);
-  
-  // Verify the user was saved
-  const verify = db.prepare("SELECT ac_id, zendesk_user_id FROM user_mappings WHERE ac_id = ?").get(ac_id);
-  if (verify) {
-    logger.debug(`✅ Verified user saved: ac_id=${verify.ac_id} (type: ${typeof verify.ac_id}), zendesk_user_id=${verify.zendesk_user_id}`);
-  } else {
-    logger.warn(`⚠️ WARNING: User ${ac_id} was not found in database after save!`);
+  return true;
+}
+
+export function saveMappedUsersBatch(mappedUsers = []) {
+  if (!db) {
+    throw new Error("Database not initialized. Call initDatabase() first.");
   }
+  if (!Array.isArray(mappedUsers) || mappedUsers.length === 0) {
+    return 0;
+  }
+  if (!saveBatchTransaction) {
+    initializePreparedStatements();
+  }
+  return saveBatchTransaction(mappedUsers);
 }
 
 /**
@@ -455,6 +488,7 @@ function extractAllPhoneNumbers(user) {
 /**
  * Process database to handle duplicate emails and phone numbers
  * This function should be called after all mapped data is saved but before sending to Zendesk
+ * Optimized to process all users in a single pass using indexes
  */
 export function processDuplicateEmailsAndPhones() {
   if (!db) {
@@ -464,13 +498,56 @@ export function processDuplicateEmailsAndPhones() {
   logger.info("🔍 Processing duplicate emails and phone numbers...");
 
   // Get all users with zendesk_primary = 1 (including already synced ones)
-  // We need to check all primary users to find duplicates, even if they're already synced
   const primaryUsers = db.prepare("SELECT * FROM user_mappings WHERE zendesk_primary = 1").all().map(hydrateMapping);
-  
   logger.info(`📋 Found ${primaryUsers.length} users with zendesk_primary = 1`);
+
+  if (primaryUsers.length === 0) {
+    logger.info("✅ No primary users found, skipping duplicate processing");
+    return;
+  }
+
+  // Get pending users (unsynced plus primaries for reference)
+  const allUsers = db
+    .prepare("SELECT * FROM user_mappings WHERE zendesk_user_id IS NULL OR zendesk_primary = 1")
+    .all()
+    .map(hydrateMapping);
+  logger.info(`📊 Processing ${allUsers.length} pending/primary users`);
+
+  if (allUsers.length === 0) {
+    logger.info("✅ No pending users found, skipping duplicate processing");
+    return;
+  }
+
+  // Build indexes for fast lookup
+  // Email index: email -> [users with that email]
+  const emailIndex = new Map();
+  // Phone index: phone -> [users with that phone]
+  const phoneIndex = new Map();
+  
+  // Build indexes from all users
+  for (const user of allUsers) {
+    // Index by email
+    if (user.email) {
+      const emailKey = user.email.toLowerCase();
+      if (!emailIndex.has(emailKey)) {
+        emailIndex.set(emailKey, []);
+      }
+      emailIndex.get(emailKey).push(user);
+    }
+    
+    // Index by all phone numbers (from phone field and identities)
+    const userPhones = extractAllPhoneNumbers(user);
+    for (const phone of userPhones) {
+      if (!phoneIndex.has(phone)) {
+        phoneIndex.set(phone, []);
+      }
+      phoneIndex.get(phone).push(user);
+    }
+  }
 
   let processedCount = 0;
 
+  // Process each primary user
   for (const primaryUser of primaryUsers) {
     // Extract email and phone numbers from primary user
     const primaryEmail = primaryUser.email;
@@ -483,74 +560,31 @@ export function processDuplicateEmailsAndPhones() {
       continue;
     }
 
-    // Find users with matching email or phone (excluding the primary user)
-    const conditions = [];
-    const params = [];
+    // Find duplicates using indexes (much faster than looping through all users)
+    const duplicateUsersSet = new Set();
     
+    // Find duplicates by email
     if (primaryEmail) {
-      conditions.push("email = ?");
-      params.push(primaryEmail);
-    }
-    
-    if (primaryPhones.length > 0) {
-      conditions.push("phone IN (" + primaryPhones.map(() => "?").join(",") + ")");
-      params.push(...primaryPhones);
-    }
-    
-    // Also check identities for matching phones
-    // We'll need to check this separately since SQLite doesn't easily search JSON
-    
-    if (conditions.length === 0) continue;
-    
-    // Find ALL duplicates (including already-synced ones) - we need to process them all
-    const query = `
-      SELECT * FROM user_mappings 
-      WHERE (${conditions.join(" OR ")}) 
-      AND ac_id != ? 
-    `;
-    params.push(primaryUser.ac_id);
-    
-    let duplicateUsers = db.prepare(query).all(...params).map(hydrateMapping);
-    
-    // Also check identities field for matching phones
-    // Check ALL users (not just pending sync) to find duplicates
-    const allUsers = db.prepare("SELECT * FROM user_mappings WHERE ac_id != ?").all(primaryUser.ac_id).map(hydrateMapping);
-    
-    for (const user of allUsers) {
-      // Skip if already in duplicateUsers
-      if (duplicateUsers.some(dup => dup.ac_id === user.ac_id)) continue;
-      
-      // Process ALL users that match (including already-synced ones)
-      // We need to update them even if they're already synced, because we're re-processing duplicates
-      
-      const userPhones = extractAllPhoneNumbers(user);
-      const userEmail = user.email;
-      
-      let isDuplicate = false;
-      let matchReason = "";
-      
-      // Check if email matches
-      if (primaryEmail && userEmail && userEmail.toLowerCase() === primaryEmail.toLowerCase()) {
-        isDuplicate = true;
-        matchReason = "email";
-      }
-      
-      // Check if any phone matches (from phone field or identities)
-      if (!isDuplicate && primaryPhones.length > 0 && userPhones.length > 0) {
-        const hasMatchingPhone = primaryPhones.some(pp => 
-          userPhones.some(up => up === pp)
-        );
-        if (hasMatchingPhone) {
-          isDuplicate = true;
-          matchReason = "phone";
+      const emailKey = primaryEmail.toLowerCase();
+      const usersWithSameEmail = emailIndex.get(emailKey) || [];
+      for (const user of usersWithSameEmail) {
+        if (user.ac_id !== primaryUser.ac_id) {
+          duplicateUsersSet.add(user);
         }
       }
-      
-      if (isDuplicate) {
-        logger.debug(`   Found duplicate by ${matchReason}: ac_id=${user.ac_id}, name=${user.name || user.external_id}, email=${userEmail}, phones=${userPhones.join(", ")}`);
-        duplicateUsers.push(user);
+    }
+    
+    // Find duplicates by phone (from phone field or identities)
+    for (const phone of primaryPhones) {
+      const usersWithSamePhone = phoneIndex.get(phone) || [];
+      for (const user of usersWithSamePhone) {
+        if (user.ac_id !== primaryUser.ac_id) {
+          duplicateUsersSet.add(user);
+        }
       }
     }
+    
+    const duplicateUsers = Array.from(duplicateUsersSet);
 
     if (duplicateUsers.length === 0) {
       logger.debug(`   No duplicates found for primary user ${primaryUser.ac_id}`);
@@ -570,6 +604,8 @@ export function processDuplicateEmailsAndPhones() {
     
     // Process each duplicate user
     for (const duplicateUser of duplicateUsers) {
+      const dupPhones = extractAllPhoneNumbers(duplicateUser);
+      
       // Update email to alias format
       let newEmail = duplicateUser.email;
       if (newEmail && primaryEmail && newEmail.toLowerCase() === primaryEmail.toLowerCase()) {
@@ -633,6 +669,16 @@ export function processDuplicateEmailsAndPhones() {
   }
 
   logger.info(`✅ Processed ${processedCount} duplicate users`);
+}
+
+export function hasUsersPendingSync() {
+  if (!db) {
+    throw new Error("Database not initialized. Call initDatabase() first.");
+  }
+  const row = db
+    .prepare("SELECT COUNT(1) AS total FROM user_mappings WHERE zendesk_user_id IS NULL")
+    .get();
+  return (row?.total || 0) > 0;
 }
 
 /**
