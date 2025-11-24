@@ -353,13 +353,13 @@ export function mapClientToZendesk(client) {
       primaryEmail = emails[0];
     }
 
+    // Extract market and coordinator from groups (service.js no longer pre-extracts these)
+    // Check branch.name as fallback, but prefer extraction from groups for consistency
     const market =
-      client.market ||
       client.branch?.name ||
       extractMarket(groups) ||
       null;
     const coordinator =
-      client.coordinator ||
       extractCoordinatorPod(groups) ||
       null;
     const clinicalRNManager =
@@ -372,9 +372,8 @@ export function mapClientToZendesk(client) {
       client.caseRating ||
       demographics.case_rating ||
       null;
+    // Extract sales_rep from tags (service.js no longer pre-extracts this)
     const salesRep =
-      client.sales_rep ||
-      client.salesRep ||
       extractSalesRep(tags) ||
       null;
 

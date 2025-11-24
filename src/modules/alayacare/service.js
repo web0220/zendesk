@@ -23,37 +23,9 @@ export async function fetchClientDetail(id) {
 }
 
 /**
- * Extractors for derived fields from detail payload
+ * Note: All field extraction and transformation logic has been moved to mapper.js.
+ * This service layer only fetches and merges raw API data.
  */
-function extractMarket(groups = []) {
-  // Example: "LOC - NYC (L001)" → "NYC"
-  const loc = groups.find(g => typeof g.name === "string" && g.name.startsWith("LOC"));
-  if (!loc) return null;
-  const match = loc.name.match(/^LOC\s*-\s*([^(]+)/i);
-  return match ? match[1].trim() : loc.name;
-}
-
-function extractCoordinatorPod(groups = []) {
-  // Example: "CSC - Katie" → "Katie"
-  const pod = groups.find(g => typeof g.name === "string" && g.name.startsWith("CSC"));
-  if (!pod) return null;
-  return pod.name.replace(/^CSC\s*-\s*/i, "").trim();
-}
-
-function extractSalesRep(tags = []) {
-  // Example tag: "BD Michelle Wells" → "Michelle Wells"
-  const tag = tags.find(t => typeof t === "string" && t.trim().toUpperCase().startsWith("BD "));
-  if (!tag) return null;
-  return tag.replace(/^BD\s*/i, "").trim();
-}
-
-function firstDigitsPhone(p) {
-  if (!p) return null;
-  // Some phone_main values contain text like "Name (646) 752-1576 - Son"
-  const digits = String(p).replace(/\D/g, "");
-  if (digits.length < 10) return null;
-  return digits.startsWith("1") ? `+${digits}` : `+1${digits}`;
-}
 
 /**
  * Fetch clients (list) and optionally enrich each one with detail (demographics, groups, tags)
@@ -89,35 +61,12 @@ async function fetchClientPage({ page, count, status, includeDetails }) {
       return {
         ...d, // Start with full detail object (includes all nested structures like contacts, demographics)
         ...c, // Override with list data where it exists
-        // Preserve full demographics object (needed by mapper for collectAllPhoneDetails)
+        // Preserve full nested structures needed by mapper
         demographics: demo,
-        // Preserve contacts array (needed by mapper for collectAllPhoneDetails)
         contacts,
-        // Keep raw arrays too
         groups,
         tags,
-
-        // flatten commonly-used fields for mapper convenience
-        first_name: demo.first_name ?? c.first_name ?? null,
-        last_name: demo.last_name ?? c.last_name ?? null,
-        email: demo.email ?? c.email ?? null,
-        phone_main: demo.phone_main ?? c.phone_main ?? null,
-        phone: demo.phone_main ?? c.phone ?? null,
-        address: demo.address ?? c.address ?? null,
-        city: demo.city ?? c.city ?? null,
-        state: demo.state ?? c.state ?? null,
-        zip: demo.zip ?? c.zip ?? null,
-
-        // derived fields for Zendesk user_fields
-        market: extractMarket(groups),
-        coordinator_pod: extractCoordinatorPod(groups),
-        case_rating: demo.case_rating ?? null,
-        sales_rep: extractSalesRep(tags),
-
-        // convenience: normalized phone
-        phone_normalized: firstDigitsPhone(
-          demo.phone_main || c.phone_main || c.phone
-        ),
+        // All field extraction and transformation is handled in mapper.js
       };
     });
   }
@@ -300,25 +249,12 @@ async function fetchCaregiverPage({ page, count, status, includeDetails }) {
       return {
         ...d, // Start with full detail object (includes all nested structures)
         ...c, // Override with list data where it exists
-        // Preserve full demographics object
+        // Preserve full nested structures needed by mapper
         demographics: demo,
-        // Keep raw arrays
         groups,
         tags,
         departments,
-        // Flatten commonly-used fields for mapper convenience
-        first_name: demo.first_name ?? c.first_name ?? null,
-        last_name: demo.last_name ?? c.last_name ?? null,
-        email: demo.email ?? c.email ?? null,
-        phone_main: demo.phone_main ?? c.phone_main ?? c.phone ?? null,
-        phone: demo.phone_main ?? c.phone_main ?? c.phone ?? null,
-        phone_other: demo.phone_other ?? c.phone_other ?? null,
-        address: demo.address ?? c.address ?? null,
-        city: demo.city ?? c.city ?? null,
-        state: demo.state ?? c.state ?? null,
-        zip: demo.zip ?? c.zip ?? null,
-        // Convenience: normalized phone
-        phone_normalized: firstDigitsPhone(demo.phone_main || c.phone_main || c.phone),
+        // All field extraction and transformation is handled in mapper.js
       };
     });
   }
