@@ -138,7 +138,7 @@ function initializePreparedStatements() {
       sales_rep, caregiver_status, department, market, identities, zendesk_primary,
       shared_phone_number, last_synced_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     ON CONFLICT(ac_id) DO UPDATE SET
       external_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.external_id ELSE external_id END,
       name = CASE WHEN zendesk_user_id IS NULL THEN excluded.name ELSE name END,

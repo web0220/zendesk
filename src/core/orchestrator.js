@@ -21,10 +21,11 @@ export async function runSync() {
   try {
     // 1️⃣ Fetch clients & caregivers (raw JSON from AlayaCare API)
     logger.info("🔍 Starting fetch from AlayaCare API...");
-    const [clients, caregivers] = await Promise.all([
-      fetchClients({ status: "active" }),
-      fetchCaregivers({ status: "active" }),
-    ]);
+    const clients = await fetchClients({ status: "active" });
+    logger.info(`📥 Fetched ${clients.length} clients`);
+
+    const caregivers = await fetchCaregivers({ status: "active" });
+    logger.info(`📥 Fetched ${caregivers.length} caregivers`);
     logger.info(`📥 Fetched ${clients.length} clients, ${caregivers.length} caregivers`);
     
     // Critical check: log if counts seem inconsistent
