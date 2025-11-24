@@ -245,6 +245,19 @@ function extractSalesRep(tags = []) {
   return tag.replace(/^BD\s*/i, "").trim();
 }
 
+function extractTierCaseRating(groups = []) {
+  const tierGroup = groups
+    .filter((g) => typeof g?.name === "string")
+    .find((g) => g.name.trim().toUpperCase().startsWith("TIER"));
+
+  if (!tierGroup) return null;
+
+  const match = tierGroup.name.match(/^TIER\s*-\s*(.+)$/i);
+  const value = match ? match[1].trim() : tierGroup.name.replace(/^TIER\s*/i, "").trim();
+
+  return value ? value.toLowerCase() : null;
+}
+
 function extractZendeskPrimary(tags = []) {
   const hasPrimaryTag = tags
     .filter((t) => typeof t === "string")
@@ -375,11 +388,7 @@ export function mapClientToZendesk(client) {
       client.clinicalRNManager ||
       extractClinicalRNManager(groups) ||
       null;
-    const caseRating =
-      client.case_rating ||
-      client.caseRating ||
-      demographics.case_rating ||
-      null;
+    const caseRating = extractTierCaseRating(groups);
     // Extract sales_rep from tags (service.js no longer pre-extracts this)
     const salesRep =
       extractSalesRep(tags) ||
