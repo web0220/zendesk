@@ -851,14 +851,17 @@ export function updateZendeskUserId(
     SET zendesk_user_id = ?,
         last_synced_at = ?,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ? OR source_ac_id = ?
+    WHERE ac_id = ?
+       OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
   `);
 
   const result = stmt.run(
     zendesk_user_id,
     last_synced_at,
     lookupKey || "__ac_lookup__",
-    String(ac_id)
+    String(ac_id),
+    userType || null,
+    userType || null
   );
   if (result.changes === 0) {
     logger.warn(
