@@ -660,7 +660,7 @@ export function processDuplicateEmailsAndPhones() {
         }
       }
       
-      // Remove phone numbers from identities
+      // Remove phone numbers and matching email identities from identities
       let identities = duplicateUser.identities;
       if (typeof identities === "string") {
         try {
@@ -673,10 +673,24 @@ export function processDuplicateEmailsAndPhones() {
         identities = [];
       }
       
-      // Filter out phone identities
-      const filteredIdentities = identities.filter(identity => 
-        identity.type !== "phone" && identity.type !== "phone_number"
-      );
+      // Filter out phone identities and email identities that match the primary email
+      // This prevents Zendesk from merging users based on identity emails
+      const originalDuplicateEmail = duplicateUser.email?.toLowerCase();
+      const filteredIdentities = identities.filter(identity => {
+        // Remove phone identities
+        if (identity.type === "phone" || identity.type === "phone_number") {
+          return false;
+        }
+        // Remove email identities that match the original primary email
+        // (before it was changed to alias)
+        if (identity.type === "email" && originalDuplicateEmail) {
+          const identityEmail = identity.value?.toLowerCase();
+          if (identityEmail === originalDuplicateEmail) {
+            return false;
+          }
+        }
+        return true;
+      });
       
       // Update the duplicate user in database
       const updateStmt = db.prepare(`
