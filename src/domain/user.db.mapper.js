@@ -155,7 +155,7 @@ export function convertDatabaseRowToZendeskUser(row) {
     organization_id: row.organization_id || undefined,
     identities,
     zendesk_primary: row.zendesk_primary === 1 || row.zendesk_primary === true,
-    user_fields,
+    user_fields: userFields,
   };
 
   Object.keys(zendeskUser).forEach((key) => {
