@@ -5,7 +5,7 @@ import {
   getAllUserMappings,
   getUserMappingByAcId,
   getUserMappingByZendeskId,
-} from "../src/infrastructure/database.js";
+} from "../src/infra/database.js";
 
 function formatField(value) {
   if (value === null || value === undefined) return "N/A";

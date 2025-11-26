@@ -1,4 +1,4 @@
-import { fetchClients, fetchCaregivers } from "../src/modules/alayacare/service.js";
+import { fetchClients, fetchCaregivers } from "../src/services/alayacare/fetch.js";
 import { logger } from "../src/config/logger.js";
 import { writeFileSync } from "fs";
 import { join } from "path";

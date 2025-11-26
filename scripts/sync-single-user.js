@@ -2,13 +2,14 @@ import { logger } from "../src/config/logger.js";
 import {
   fetchClientDetail,
   fetchCaregiverDetail,
-} from "../src/modules/alayacare/service.js";
+} from "../src/services/alayacare/alayacare.api.js";
 import {
-  mapClientToZendesk,
-  mapCaregiverToZendesk,
-} from "../src/modules/alayacare/mapper.js";
-import { sanitizeUsers } from "../src/modules/common/validator.js";
-import { upsertSingleUser, syncUserIdentities } from "../src/modules/zendesk/service.js";
+  mapClientUser,
+  mapCaregiverUser,
+} from "../src/services/alayacare/mapper.js";
+import { upsertSingleUser } from "../src/services/zendesk/upsert.js";
+import { syncUserIdentities } from "../src/services/zendesk/identitySync.js";
+import { UserEntity } from "../src/domain/UserEntity.js";
 import {
   initDatabase,
   closeDatabase,
@@ -16,9 +17,8 @@ import {
   processDuplicateEmailsAndPhones,
   getUsersPendingSync,
   getUserMappingByAcId,
-  convertDatabaseRowToZendeskUser,
   updateZendeskUserId,
-} from "../src/infrastructure/database.js";
+} from "../src/infra/database.js";
 
 function printUsage() {
   logger.info(
@@ -39,10 +39,10 @@ async function loadUser(type, id) {
 
 function mapUser(type, payload) {
   if (type === "client") {
-    return mapClientToZendesk(payload);
+    return mapClientUser(payload);
   }
   if (type === "caregiver") {
-    return mapCaregiverToZendesk(payload);
+    return mapCaregiverUser(payload);
   }
   throw new Error(`Unsupported type: ${type}`);
 }
@@ -90,17 +90,16 @@ async function main() {
     logger.info(JSON.stringify(rawUser, null, 2));
 
     logger.info("🧠 Mapping record to Zendesk format...");
-    const mapped = mapUser(targetType, rawUser);
-    if (!mapped) {
+    const entity = mapUser(targetType, rawUser);
+    if (!entity) {
       throw new Error("Mapping returned null. Check mapper logs for details.");
     }
 
-    const sanitized = sanitizeUsers([mapped]);
-    if (sanitized.length === 0) {
+    if (!entity.validate()) {
       throw new Error("User failed validation and cannot be synced.");
     }
 
-    const [user] = sanitized;
+    const user = entity.toZendeskPayload();
     const userType = user.user_fields?.type || targetType;
     
     // 1️⃣ Check if user already exists in database
@@ -153,7 +152,7 @@ async function main() {
 
     // 4️⃣ Convert database row to Zendesk user format
     logger.info("🔄 Converting database row to Zendesk user format...");
-    const zendeskUser = convertDatabaseRowToZendeskUser(userFromDb);
+    const zendeskUser = UserEntity.fromDbRow(userFromDb)?.toZendeskPayload();
     
     if (!zendeskUser) {
       throw new Error("Failed to convert database row to Zendesk format.");

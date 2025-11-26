@@ -1,5 +1,5 @@
 import { logger } from "../../config/logger.js";
-import { getJobStatus } from "./service.js";
+import { getJobStatus } from "./zendesk.api.js";
 
 /**
  * Polls Zendesk job status until completed or failed

@@ -1,5 +1,5 @@
-import { fetchClientDetail } from "../src/modules/alayacare/service.js";
-import { mapClientToZendesk } from "../src/modules/alayacare/mapper.js";
+import { fetchClientDetail } from "../src/services/alayacare/alayacare.api.js";
+import { mapClientToZendesk } from "../src/services/alayacare/mapper.js";
 import { logger } from "../src/config/logger.js";
 
 async function showZendeskPayload() {

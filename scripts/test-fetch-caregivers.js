@@ -1,5 +1,5 @@
-import { fetchCaregiverDetail } from "../src/modules/alayacare/service.js";
-import { mapCaregiverToZendesk } from "../src/modules/alayacare/mapper.js";
+import { fetchCaregiverDetail } from "../src/services/alayacare/alayacare.api.js";
+import { mapCaregiverToZendesk } from "../src/services/alayacare/mapper.js";
 import { logger } from "../src/config/logger.js";
 
 async function testFetchEmployee() {

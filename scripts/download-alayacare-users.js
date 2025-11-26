@@ -7,7 +7,7 @@ import { logger } from "../src/config/logger.js";
 import {
   fetchClients,
   fetchCaregivers,
-} from "../src/modules/alayacare/service.js";
+} from "../src/services/alayacare/fetch.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
