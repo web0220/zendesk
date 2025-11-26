@@ -1,5 +1,16 @@
 import { logger } from "../config/logger.js";
 
+const ALVITA_COMPANY_ORG_ID = "40994316312731";
+
+function isAlvitaCompanyMember(orgId) {
+  if (orgId === null || orgId === undefined) return false;
+  try {
+    return String(orgId) === ALVITA_COMPANY_ORG_ID;
+  } catch {
+    return false;
+  }
+}
+
 export function determineUserTypeForStorage(mappedData, fields) {
   return (
     fields.user_type ||
@@ -41,6 +52,8 @@ export function extractMappedFields(mappedData = {}) {
 
   const userFields = mappedData.user_fields || {};
   const userType = userFields.type || null;
+  const organizationId = mappedData.organization_id || null;
+  const isCompanyMember = isAlvitaCompanyMember(organizationId);
 
   const toJsonString = (value) => {
     if (value === null || value === undefined) return null;
@@ -54,7 +67,7 @@ export function extractMappedFields(mappedData = {}) {
     name: mappedData.name || null,
     email: mappedData.email || null,
     phone: mappedData.phone || null,
-    organization_id: mappedData.organization_id || null,
+    organization_id: organizationId,
     user_type: userType,
     identities: toJsonString(mappedData.identities),
     market: toJsonString(userFields.market),
@@ -64,13 +77,13 @@ export function extractMappedFields(mappedData = {}) {
   if (userType === "client") {
     extracted.coordinator_pod = userFields.coordinator_pod || null;
     extracted.case_rating = userFields.case_rating || null;
-    extracted.client_status = userFields.client_status || null;
+    extracted.client_status = isCompanyMember ? null : userFields.client_status || null;
     extracted.clinical_rn_manager = toJsonString(userFields.clinical_rn_manager);
     extracted.sales_rep = toJsonString(userFields.sales_rep);
   }
 
   if (userType === "caregiver") {
-    extracted.caregiver_status = userFields.caregiver_status || null;
+    extracted.caregiver_status = isCompanyMember ? null : userFields.caregiver_status || null;
     extracted.department = toJsonString(userFields.department);
   }
 
@@ -105,6 +118,7 @@ export function convertDatabaseRowToZendeskUser(row) {
   if (!row) return null;
 
   const userFields = {};
+  const isCompanyMember = isAlvitaCompanyMember(row.organization_id);
 
   if (row.user_type) {
     userFields.type = row.user_type;
@@ -113,13 +127,17 @@ export function convertDatabaseRowToZendeskUser(row) {
   if (row.user_type === "client") {
     if (row.coordinator_pod) userFields.coordinator_pod = row.coordinator_pod;
     if (row.case_rating) userFields.case_rating = row.case_rating;
-    if (row.client_status) userFields.client_status = row.client_status;
+    if (row.client_status && !isCompanyMember) {
+      userFields.client_status = row.client_status;
+    }
     if (row.clinical_rn_manager) userFields.clinical_rn_manager = row.clinical_rn_manager;
     if (row.sales_rep) userFields.sales_rep = row.sales_rep;
   }
 
   if (row.user_type === "caregiver") {
-    if (row.caregiver_status) userFields.caregiver_status = row.caregiver_status;
+    if (row.caregiver_status && !isCompanyMember) {
+      userFields.caregiver_status = row.caregiver_status;
+    }
     if (row.department) userFields.department = row.department;
   }
 

@@ -133,6 +133,8 @@ export function processDuplicateEmailsAndPhones() {
     const sharedPhones = Array.from(allSharedPhones);
     const sharedPhoneNumberStr = sharedPhones.join("\n");
 
+    const normalizedPrimaryEmail = primaryEmail?.toLowerCase();
+
     for (const duplicateUser of duplicateUsers) {
       let newEmail = duplicateUser.email;
       if (newEmail && primaryEmail && newEmail.toLowerCase() === primaryEmail.toLowerCase()) {
@@ -159,9 +161,12 @@ export function processDuplicateEmailsAndPhones() {
         if (identity.type === "phone" || identity.type === "phone_number") {
           return false;
         }
-        if (identity.type === "email" && originalDuplicateEmail) {
+        if (identity.type === "email") {
           const identityEmail = identity.value?.toLowerCase();
-          if (identityEmail === originalDuplicateEmail) {
+          if (
+            (originalDuplicateEmail && identityEmail === originalDuplicateEmail) ||
+            (normalizedPrimaryEmail && identityEmail === normalizedPrimaryEmail)
+          ) {
             return false;
           }
         }
