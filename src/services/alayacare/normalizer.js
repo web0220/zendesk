@@ -29,9 +29,9 @@ function extractCoordinatorPod(groups = []) {
   const pods = groups
     .filter(
       (group) =>
-        typeof group?.name === "string" && group.name.trim().toUpperCase().startsWith("CSC")
+        typeof group?.name === "string" && group.name.trim().toUpperCase().startsWith("POD")
     )
-    .map((group) => group.name.replace(/^CSC\s*-\s*/i, "").trim())
+    .map((group) => group.name.replace(/^POD\s*-\s*/i, "").trim())
     .filter(Boolean);
   return pods.length > 0 ? pods.join(", ") : null;
 }

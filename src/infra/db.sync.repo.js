@@ -24,16 +24,16 @@ function initializePreparedStatements() {
       organization_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.organization_id ELSE organization_id END,
       user_type = CASE WHEN zendesk_user_id IS NULL THEN excluded.user_type ELSE user_type END,
       source_ac_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.source_ac_id ELSE source_ac_id END,
-      coordinator_pod = CASE WHEN zendesk_user_id IS NULL THEN excluded.coordinator_pod ELSE coordinator_pod END,
-      case_rating = CASE WHEN zendesk_user_id IS NULL THEN excluded.case_rating ELSE case_rating END,
-      client_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.client_status ELSE client_status END,
-      clinical_rn_manager = CASE WHEN zendesk_user_id IS NULL THEN excluded.clinical_rn_manager ELSE clinical_rn_manager END,
-      sales_rep = CASE WHEN zendesk_user_id IS NULL THEN excluded.sales_rep ELSE sales_rep END,
-      caregiver_status = CASE WHEN zendesk_user_id IS NULL THEN excluded.caregiver_status ELSE caregiver_status END,
-      department = CASE WHEN zendesk_user_id IS NULL THEN excluded.department ELSE department END,
-      market = CASE WHEN zendesk_user_id IS NULL THEN excluded.market ELSE market END,
-      identities = CASE WHEN zendesk_user_id IS NULL THEN excluded.identities ELSE identities END,
-      zendesk_primary = CASE WHEN zendesk_user_id IS NULL THEN excluded.zendesk_primary ELSE zendesk_primary END,
+      coordinator_pod = excluded.coordinator_pod,
+      case_rating = excluded.case_rating,
+      client_status = excluded.client_status,
+      clinical_rn_manager = excluded.clinical_rn_manager,
+      sales_rep = excluded.sales_rep,
+      caregiver_status = excluded.caregiver_status,
+      department = excluded.department,
+      market = excluded.market,
+      identities = excluded.identities,
+      zendesk_primary = excluded.zendesk_primary,
       shared_phone_number = CASE WHEN zendesk_user_id IS NULL THEN excluded.shared_phone_number ELSE shared_phone_number END,
       updated_at = CURRENT_TIMESTAMP
   `);
@@ -71,9 +71,9 @@ function saveMappedDataInternal(mappedData) {
 
   if (existing && existing.zendesk_user_id !== null) {
     logger.debug(
-      `⏭️  Skipping mapped data update for ac_id=${acKey} (already synced, preserving mapped data)`
+      `🔄 Updating mapped data for already-synced user ac_id=${acKey} (updating group/tag-based fields from fresh API data: coordinator_pod, case_rating, market, etc.)`
     );
-    return false;
+    // Continue to update - the SQL will preserve zendesk_user_id but update fields extracted from groups/tags
   }
 
   insertMappedDataStmt.run(
