@@ -232,17 +232,21 @@ function processEmailDuplicates() {
       }
 
       let newEmail = duplicateUser.email;
+      const originalEmail = duplicateUser.email ? duplicateUser.email.toLowerCase() : null;
+      let emailWasAliased = false;
 
       // If duplicate user's email matches any primary email, create alias
       if (newEmail && normalizedPrimaryEmails.has(newEmail.toLowerCase())) {
         const emailParts = newEmail.split("@");
         if (emailParts.length === 2) {
           newEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
+          emailWasAliased = true;
           logger.debug(`   Creating alias email for duplicate user ${duplicateUser.ac_id}: ${duplicateUser.email} → ${newEmail}`);
         }
       }
 
       // Filter identities: remove email identities that match primary user's emails
+      // Also remove the original email from identities if we aliased it (to avoid duplication)
       let identities = duplicateUser.identities;
       if (typeof identities === "string") {
         try {
@@ -260,13 +264,16 @@ function processEmailDuplicates() {
         if (identity.type === "phone" || identity.type === "phone_number") {
           return true;
         }
-        // Remove email identities that match primary user's emails or duplicate user's own email
+        // Remove email identities that match primary user's emails
         if (identity.type === "email") {
           const identityEmail = identity.value?.toLowerCase();
-          if (
-            normalizedPrimaryEmails.has(identityEmail) ||
-            (duplicateUser.email && identityEmail === duplicateUser.email.toLowerCase())
-          ) {
+          // Remove if it conflicts with primary user's emails
+          if (normalizedPrimaryEmails.has(identityEmail)) {
+            return false;
+          }
+          // If we aliased the email field, also remove the original email from identities
+          // (to avoid having both the aliased email in email field and original in identities)
+          if (emailWasAliased && originalEmail && identityEmail === originalEmail) {
             return false;
           }
         }
@@ -383,14 +390,6 @@ function processPhoneDuplicates() {
       `   Processing phone group: phone=${phone}, primary=${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id}), ${duplicateUsers.length} duplicate(s)`
     );
 
-    // Collect all phone numbers from the entire group
-    const allGroupPhones = new Set();
-    for (const user of phoneGroup) {
-      extractAllPhoneNumbers(user).forEach((p) => allGroupPhones.add(p));
-    }
-    const sharedPhones = Array.from(allGroupPhones);
-    const sharedPhoneNumberStr = sharedPhones.length > 0 ? sharedPhones.join("\n") : null;
-
     // Process each duplicate user in the phone group
     for (const duplicateUser of duplicateUsers) {
       // Skip if already synced
@@ -398,6 +397,10 @@ function processPhoneDuplicates() {
         logger.debug(`⏭️  Skipping duplicate user ${duplicateUser.ac_id} (already synced)`);
         continue;
       }
+
+      // Get THIS USER'S phone numbers (not all phones from the group)
+      const duplicateUserPhones = extractAllPhoneNumbers(duplicateUser);
+      const sharedPhoneNumberStr = duplicateUserPhones.length > 0 ? duplicateUserPhones.join("\n") : null;
 
       // Filter identities: remove phone identities (they'll be in shared_phone_number)
       let identities = duplicateUser.identities;
@@ -420,7 +423,7 @@ function processPhoneDuplicates() {
         return true;
       });
 
-      // Update duplicate user: move phone to shared_phone_number, remove phone from identities
+      // Update duplicate user: move THIS USER'S phones to shared_phone_number, remove phone from identities
       const updateStmt = db.prepare(`
         UPDATE user_mappings
         SET phone = NULL,
@@ -430,10 +433,10 @@ function processPhoneDuplicates() {
         WHERE ac_id = ?
       `);
 
-      const phoneCount = extractAllPhoneNumbers(duplicateUser).length;
+      const phoneCount = duplicateUserPhones.length;
       updateStmt.run(JSON.stringify(filteredIdentities), sharedPhoneNumberStr, duplicateUser.ac_id);
       logger.debug(
-        `   Updated duplicate user ${duplicateUser.ac_id}: moved ${phoneCount} phone(s) to shared_phone_number`
+        `   Updated duplicate user ${duplicateUser.ac_id}: moved ${phoneCount} phone(s) to shared_phone_number: ${duplicateUserPhones.join(", ")}`
       );
       processedCount++;
       processedUserIds.add(duplicateUser.ac_id);
