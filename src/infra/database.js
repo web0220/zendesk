@@ -4,6 +4,9 @@ export {
   saveMappedUsersBatch,
   hasUsersPendingSync,
   getUsersPendingSync,
+  resetCurrentActiveFlag,
+  getUsersWithStatusChange,
+  fetchAndUpdateUserStatus,
 } from "./db.sync.repo.js";
 export {
   upsertUserMapping,

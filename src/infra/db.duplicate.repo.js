@@ -5,10 +5,21 @@ import { getDb } from "./db.api.js";
 function extractAllEmails(user) {
   const emails = new Set();
 
+  // Extract emails from email field (may contain comma-separated emails)
   if (user.email) {
-    emails.add(user.email.toLowerCase());
+    const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+    const matches = user.email.match(emailPattern);
+    if (matches) {
+      matches.forEach((email) => {
+        emails.add(email.trim().toLowerCase());
+      });
+    } else {
+      // Fallback: if no regex match, add the whole string (might be a single valid email)
+      emails.add(user.email.trim().toLowerCase());
+    }
   }
 
+  // Extract emails from identities
   if (user.identities) {
     let identities = user.identities;
     if (typeof identities === "string") {

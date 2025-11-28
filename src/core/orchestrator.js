@@ -11,6 +11,9 @@ import {
   getUsersPendingSync,
   updateZendeskUserId,
   processDuplicateEmailsAndPhones,
+  resetCurrentActiveFlag,
+  getUsersWithStatusChange,
+  fetchAndUpdateUserStatus,
 } from "../infra/database.js";
 
 const BATCH_LIMIT = 100;
@@ -59,6 +62,10 @@ function hydrateEntitiesFromDb(rows) {
 
 export async function runSync() {
   try {
+    // Step 1: Reset current_active flag for all users (prepare for new sync)
+    logger.info("🔄 Resetting current_active flag for all users...");
+    resetCurrentActiveFlag();
+
     logger.info("🔍 Starting fetch from AlayaCare API...");
     const clients = await fetchClients({ status: "active" });
     const caregivers = await fetchCaregivers({ status: "active" });
@@ -100,10 +107,69 @@ export async function runSync() {
       logger.info("⏭️ Skipping duplicate processing (no pending users)");
     }
 
+    // Step 2: Detect and update status for users who changed from active to inactive
+    logger.info("🔍 Checking for users with status changes...");
+    const usersWithStatusChange = getUsersWithStatusChange();
+    
+    if (usersWithStatusChange.length > 0) {
+      logger.info(
+        `📋 Found ${usersWithStatusChange.length} users with potential status change. Fetching current status from AlayaCare...`
+      );
+
+      // Fetch status updates with concurrency control
+      const statusUpdateTasks = usersWithStatusChange.map((user) => async () => {
+        return fetchAndUpdateUserStatus(user);
+      });
+
+      const DETAIL_CONCURRENCY = Number(process.env.ALAYACARE_DETAIL_CONCURRENCY) || 10;
+      const statusUpdateResults = await runWithLimit(statusUpdateTasks, DETAIL_CONCURRENCY);
+      
+      const successfulUpdates = statusUpdateResults.filter(Boolean).length;
+      const failedUpdates = statusUpdateResults.length - successfulUpdates;
+      
+      logger.info(
+        `✅ Status update complete: ${successfulUpdates} successful, ${failedUpdates} failed`
+      );
+      
+      if (failedUpdates > 0) {
+        logger.warn(
+          `⚠️ ${failedUpdates} users failed to update status. They will be retried in next sync.`
+        );
+      }
+    } else {
+      logger.info("✅ No users with status changes detected.");
+    }
+
     logger.info("📖 Reading users from database for Zendesk sync...");
     const usersFromDb = getUsersPendingSync();
-    if (usersFromDb.length === 0) {
+    
+    // Also include users with updated status (even if already synced) - Option B
+    // These users need to be re-synced to update their status in Zendesk
+    const allUsersForSync = [...usersFromDb];
+    const usersWithUpdatedStatus = usersWithStatusChange.filter((user) => {
+      // Include all users with status change - they should be re-synced to update Zendesk
+      return true;
+    });
+    
+    // Add users with updated status to sync list (avoid duplicates)
+    const existingAcIds = new Set(usersFromDb.map((u) => u.ac_id));
+    for (const user of usersWithUpdatedStatus) {
+      if (!existingAcIds.has(user.ac_id)) {
+        allUsersForSync.push(user);
+      }
+    }
+    
+    if (usersWithUpdatedStatus.length > 0) {
+      logger.info(
+        `🔄 Including ${usersWithUpdatedStatus.length} users with updated status in Zendesk sync (to update their status in Zendesk)`
+      );
+    }
+    
+    if (allUsersForSync.length === 0) {
       logger.info("✅ No users pending sync. All users are already synced.");
+      if (usersWithStatusChange.length > 0) {
+        logger.info(`   ℹ️  Processed ${usersWithStatusChange.length} status updates (users already synced, status updated in DB)`);
+      }
       return {
         totalUsers: entityPayloads.length,
         savedToDatabase: savedCount,
@@ -111,10 +177,11 @@ export async function runSync() {
         batches: 0,
         mappingsStored: 0,
         identitiesSynced: 0,
+        statusUpdatesProcessed: usersWithStatusChange.length,
       };
     }
 
-    const zendeskUsers = hydrateEntitiesFromDb(usersFromDb);
+    const zendeskUsers = hydrateEntitiesFromDb(allUsersForSync);
     logger.info(`📦 Converted ${zendeskUsers.length} database records into Zendesk payloads`);
 
     const batches = chunkArray(zendeskUsers, BATCH_LIMIT);
@@ -331,6 +398,7 @@ export async function runSync() {
       batches: results.length,
       mappingsStored: totalMappingsUpdated,
       identitiesSynced: totalIdentitiesSynced,
+      statusUpdatesProcessed: usersWithStatusChange.length,
     };
   } catch (err) {
     logger.error("❌ Sync failed:", err.response?.data || err.message);
