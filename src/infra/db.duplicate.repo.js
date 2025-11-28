@@ -185,6 +185,20 @@ function processEmailDuplicates() {
     return;
   }
 
+  // Build global email index: email -> [users who have this email]
+  // This includes ALL users (synced and pending) to catch all duplicates
+  const globalEmailIndex = new Map();
+  for (const user of allUsers) {
+    const userEmails = extractAllEmails(user);
+    for (const email of userEmails) {
+      const normalizedEmail = email.toLowerCase();
+      if (!globalEmailIndex.has(normalizedEmail)) {
+        globalEmailIndex.set(normalizedEmail, []);
+      }
+      globalEmailIndex.get(normalizedEmail).push(user);
+    }
+  }
+
   // Find email groups (users connected by shared emails)
   const emailGroups = findEmailGroups(allUsers);
   logger.info(`🔗 Found ${emailGroups.length} email group(s)`);
@@ -223,6 +237,16 @@ function processEmailDuplicates() {
     const primaryEmails = extractAllEmails(primaryUser);
     const normalizedPrimaryEmails = new Set(primaryEmails.map((e) => e.toLowerCase()));
 
+    // Collect all emails from already-synced users in the group (these are already in Zendesk)
+    // We need to remove these from pending users to avoid Zendesk duplicate errors
+    const syncedUsersInGroup = group.filter((u) => u.zendesk_user_id != null);
+    const syncedEmails = new Set();
+    for (const syncedUser of syncedUsersInGroup) {
+      extractAllEmails(syncedUser).forEach((email) => syncedEmails.add(email.toLowerCase()));
+    }
+    // Combine primary emails and synced emails (primary is already synced if it has zendesk_user_id)
+    const allConflictingEmails = new Set([...normalizedPrimaryEmails, ...syncedEmails]);
+
     // Process each duplicate user in the email group
     for (const duplicateUser of duplicateUsers) {
       // Skip if already synced
@@ -235,17 +259,39 @@ function processEmailDuplicates() {
       const originalEmail = duplicateUser.email ? duplicateUser.email.toLowerCase() : null;
       let emailWasAliased = false;
 
-      // If duplicate user's email matches any primary email, create alias
-      if (newEmail && normalizedPrimaryEmails.has(newEmail.toLowerCase())) {
-        const emailParts = newEmail.split("@");
-        if (emailParts.length === 2) {
-          newEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
-          emailWasAliased = true;
-          logger.debug(`   Creating alias email for duplicate user ${duplicateUser.ac_id}: ${duplicateUser.email} → ${newEmail}`);
+      // Check if this user's email field matches ANY other user's email (not just primary)
+      // This catches cases where users share emails but might not be in the same group
+      if (newEmail) {
+        const normalizedEmail = newEmail.toLowerCase();
+        const usersWithThisEmail = globalEmailIndex.get(normalizedEmail) || [];
+        const otherUsersWithEmail = usersWithThisEmail.filter(
+          (u) => u.ac_id !== duplicateUser.ac_id
+        );
+        
+        // If another user has this email, alias it
+        if (otherUsersWithEmail.length > 0) {
+          const emailParts = newEmail.split("@");
+          if (emailParts.length === 2) {
+            newEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
+            emailWasAliased = true;
+            const hasSyncedUser = otherUsersWithEmail.some((u) => u.zendesk_user_id != null);
+            logger.debug(
+              `   Creating alias email for duplicate user ${duplicateUser.ac_id}: ${duplicateUser.email} → ${newEmail} (found in ${otherUsersWithEmail.length} other user(s)${hasSyncedUser ? ", including synced" : ""})`
+            );
+          }
+        }
+        // Also check if it matches primary email (for backward compatibility)
+        else if (normalizedPrimaryEmails.has(normalizedEmail)) {
+          const emailParts = newEmail.split("@");
+          if (emailParts.length === 2) {
+            newEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
+            emailWasAliased = true;
+            logger.debug(`   Creating alias email for duplicate user ${duplicateUser.ac_id}: ${duplicateUser.email} → ${newEmail}`);
+          }
         }
       }
 
-      // Filter identities: remove email identities that match primary user's emails
+      // Filter identities: remove email identities that match primary user's emails OR any synced user's emails
       // Also remove the original email from identities if we aliased it (to avoid duplication)
       let identities = duplicateUser.identities;
       if (typeof identities === "string") {
@@ -259,26 +305,48 @@ function processEmailDuplicates() {
         identities = [];
       }
 
-      const filteredIdentities = identities.filter((identity) => {
+      // Process email identities: alias duplicates instead of removing them
+      const processedIdentities = identities.map((identity) => {
         // Keep phone identities (they'll be processed separately)
         if (identity.type === "phone" || identity.type === "phone_number") {
-          return true;
+          return identity;
         }
-        // Remove email identities that match primary user's emails
+        
+        // Handle email identities
         if (identity.type === "email") {
           const identityEmail = identity.value?.toLowerCase();
-          // Remove if it conflicts with primary user's emails
-          if (normalizedPrimaryEmails.has(identityEmail)) {
-            return false;
-          }
-          // If we aliased the email field, also remove the original email from identities
+          
+          // If we aliased the email field and this is the same email, remove it from identities
           // (to avoid having both the aliased email in email field and original in identities)
           if (emailWasAliased && originalEmail && identityEmail === originalEmail) {
-            return false;
+            return null; // Remove this identity
+          }
+          
+          // Check if this email already exists for another user
+          // If ANY other user has this email (synced or pending), we must alias it to avoid Zendesk duplicates
+          const usersWithThisEmail = globalEmailIndex.get(identityEmail) || [];
+          const otherUsersWithEmail = usersWithThisEmail.filter(
+            (u) => u.ac_id !== duplicateUser.ac_id
+          );
+          
+          // If another user has this email, ALWAYS alias it (regardless of sync status or group)
+          // This prevents Zendesk duplicate errors when users sync in different batches
+          if (otherUsersWithEmail.length > 0) {
+            // Alias this email identity
+            const emailParts = identity.value.split("@");
+            if (emailParts.length === 2) {
+              const aliasedEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
+              const hasSyncedUser = otherUsersWithEmail.some((u) => u.zendesk_user_id != null);
+              logger.debug(
+                `   Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${duplicateUser.ac_id} (found in ${otherUsersWithEmail.length} other user(s)${hasSyncedUser ? ", including synced" : ""})`
+              );
+              return { ...identity, value: aliasedEmail };
+            }
           }
         }
-        return true;
-      });
+        
+        return identity;
+      }).filter((identity) => identity !== null); // Remove null entries
 
       // Update duplicate user: only change email and identities, DON'T touch phone or shared_phone_number
       const updateStmt = db.prepare(`
@@ -289,8 +357,12 @@ function processEmailDuplicates() {
         WHERE ac_id = ?
       `);
 
-      updateStmt.run(newEmail, JSON.stringify(filteredIdentities), duplicateUser.ac_id);
-      logger.debug(`   Updated duplicate user ${duplicateUser.ac_id}: email=${newEmail || "null"}`);
+      updateStmt.run(newEmail, JSON.stringify(processedIdentities), duplicateUser.ac_id);
+      const emailChanges = emailWasAliased ? `email aliased: ${duplicateUser.email} → ${newEmail}` : "";
+      const identityChanges = processedIdentities.length !== identities.length 
+        ? `, ${identities.length - processedIdentities.length} email identity(ies) aliased/removed`
+        : "";
+      logger.debug(`   Updated duplicate user ${duplicateUser.ac_id}: ${emailChanges}${identityChanges}`);
       processedCount++;
       processedUserIds.add(duplicateUser.ac_id);
     }
@@ -299,6 +371,104 @@ function processEmailDuplicates() {
   }
 
   logger.info(`✅ Processed ${processedCount} duplicate users in ${emailGroups.length} email group(s)`);
+
+  // Second pass: Process ALL pending users (even those not in groups) to catch any remaining duplicates
+  // This ensures we catch edge cases where emails might be missed
+  logger.info("🔍 Second pass: Checking all pending users for duplicate emails...");
+  const allPendingUsers = allUsers.filter((u) => u.zendesk_user_id == null);
+  let secondPassCount = 0;
+
+  for (const user of allPendingUsers) {
+    // Skip if already processed in first pass
+    if (processedUserIds.has(user.ac_id)) {
+      continue;
+    }
+
+    let newEmail = user.email;
+    const originalEmail = user.email ? user.email.toLowerCase() : null;
+    let emailWasAliased = false;
+
+    // Check email field against global index
+    if (newEmail) {
+      const normalizedEmail = newEmail.toLowerCase();
+      const usersWithThisEmail = globalEmailIndex.get(normalizedEmail) || [];
+      const otherUsersWithEmail = usersWithThisEmail.filter((u) => u.ac_id !== user.ac_id);
+      
+      if (otherUsersWithEmail.length > 0) {
+        const emailParts = newEmail.split("@");
+        if (emailParts.length === 2) {
+          newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+          emailWasAliased = true;
+          logger.debug(
+            `   [Second pass] Aliasing email field ${user.email} → ${newEmail} for user ${user.ac_id}`
+          );
+        }
+      }
+    }
+
+    // Check all email identities against global index
+    let identities = user.identities;
+    if (typeof identities === "string") {
+      try {
+        identities = JSON.parse(identities);
+      } catch {
+        identities = [];
+      }
+    }
+    if (!Array.isArray(identities)) {
+      identities = [];
+    }
+
+    const processedIdentities = identities.map((identity) => {
+      if (identity.type === "phone" || identity.type === "phone_number") {
+        return identity;
+      }
+      
+      if (identity.type === "email") {
+        const identityEmail = identity.value?.toLowerCase();
+        
+        // Remove if we aliased the email field and this is the same email
+        if (emailWasAliased && originalEmail && identityEmail === originalEmail) {
+          return null;
+        }
+        
+        // Check if this email exists for another user
+        const usersWithThisEmail = globalEmailIndex.get(identityEmail) || [];
+        const otherUsersWithEmail = usersWithThisEmail.filter((u) => u.ac_id !== user.ac_id);
+        
+        if (otherUsersWithEmail.length > 0) {
+          const emailParts = identity.value.split("@");
+          if (emailParts.length === 2) {
+            const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+            logger.debug(
+              `   [Second pass] Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id}`
+            );
+            return { ...identity, value: aliasedEmail };
+          }
+        }
+      }
+      
+      return identity;
+    }).filter((identity) => identity !== null);
+
+    // Only update if something changed
+    if (emailWasAliased || JSON.stringify(processedIdentities) !== JSON.stringify(identities)) {
+      const updateStmt = db.prepare(`
+        UPDATE user_mappings
+        SET email = ?,
+            identities = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE ac_id = ?
+      `);
+
+      updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+      secondPassCount++;
+    }
+  }
+
+  if (secondPassCount > 0) {
+    logger.info(`✅ Second pass: Processed ${secondPassCount} additional users`);
+  }
 }
 
 /**
