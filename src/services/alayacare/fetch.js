@@ -77,6 +77,8 @@ export async function fetchClients({
   let pagesFetched = 0;
   let consecutiveEmptyPages = 0;
   const MAX_CONSECUTIVE_EMPTY = 3;
+  let consecutiveNoUniquePages = 0;
+  const MAX_CONSECUTIVE_NO_UNIQUE = 3;
   let totalFilteredOut = 0;
 
   while (true) {
@@ -90,26 +92,35 @@ export async function fetchClients({
     const batch = result.clients;
     const originalCount = result.originalCount;
 
-    const uniqueBatch = batch.filter((client) => {
+    // Filter out clients without IDs, but DON'T filter duplicates
+    // We need to fetch all users (including duplicates) to get updates
+    // The database UPSERT will handle deduplication and updates
+    const validBatch = batch.filter((client) => {
       if (!client?.id) {
         logger.warn(`⚠️ Client user missing ID on page ${currentPage}`);
         return false;
       }
-      if (seenIds.has(client.id)) {
-        logger.debug(`   ⚠️ Duplicate client ID ${client.id} detected on page ${currentPage}, skipping`);
-        return false;
-      }
-      seenIds.add(client.id);
       return true;
     });
 
-    const duplicatesCount = batch.length - uniqueBatch.length;
+    // Track seen IDs for loop detection (but still fetch duplicates to allow updates)
+    let newUniqueIds = 0;
+    for (const client of validBatch) {
+      if (!seenIds.has(client.id)) {
+        seenIds.add(client.id);
+        newUniqueIds++;
+      } else {
+        logger.debug(`   ℹ️  Duplicate client ID ${client.id} detected on page ${currentPage} (will still fetch to check for updates)`);
+      }
+    }
+
+    const duplicatesCount = validBatch.length - newUniqueIds;
     if (duplicatesCount > 0) {
-      logger.warn(`⚠️ Found ${duplicatesCount} duplicate client user(s) on page ${currentPage}`);
+      logger.debug(`ℹ️  Found ${duplicatesCount} duplicate client user(s) on page ${currentPage} (fetching anyway to check for updates)`);
     }
 
     logger.debug(
-      `📄 Clients page ${currentPage}: API returned ${originalCount}, after filtering: ${batch.length}, unique: ${uniqueBatch.length}`
+      `📄 Clients page ${currentPage}: API returned ${originalCount}, after filtering: ${validBatch.length}, new unique IDs: ${newUniqueIds}`
     );
 
     if (originalCount === 0) {
@@ -127,15 +138,36 @@ export async function fetchClients({
 
     consecutiveEmptyPages = 0;
 
-    if (originalCount > batch.length) {
-      const filteredThisPage = originalCount - batch.length;
+    // Check if all items on this page are duplicates (0 new unique IDs but API returned items)
+    // This happens when the API starts returning only duplicates (infinite loop detection)
+    // We still fetch them to allow updates, but stop pagination if it's clearly a loop
+    if (newUniqueIds === 0 && originalCount > 0) {
+      consecutiveNoUniquePages++;
+      if (consecutiveNoUniquePages >= MAX_CONSECUTIVE_NO_UNIQUE) {
+        logger.info(
+          `✅ Reached end of clients at page ${currentPage} (${consecutiveNoUniquePages} consecutive pages with 0 new unique IDs - infinite loop detected, stopping pagination)`
+        );
+        break;
+      }
+      logger.debug(
+        `   All items on page ${currentPage} are duplicates (0 new unique IDs), fetching anyway for updates... (${consecutiveNoUniquePages}/${MAX_CONSECUTIVE_NO_UNIQUE})`
+      );
+      // Continue to next page even if all duplicates (to allow updates)
+      // But we'll break if this happens too many times in a row
+    } else {
+      consecutiveNoUniquePages = 0;
+    }
+
+    if (originalCount > validBatch.length) {
+      const filteredThisPage = originalCount - validBatch.length;
       totalFilteredOut += filteredThisPage;
       logger.debug(
         `   ℹ️  ${filteredThisPage} client user(s) filtered out on page ${currentPage} (status filter)`
       );
     }
 
-    allClients.push(...uniqueBatch);
+    // Fetch ALL valid clients (including duplicates) - database UPSERT will handle updates
+    allClients.push(...validBatch);
     pagesFetched += 1;
 
     if (originalCount < pageSize) {
@@ -230,6 +262,8 @@ export async function fetchCaregivers({
   let pagesFetched = 0;
   let consecutiveEmptyPages = 0;
   const MAX_CONSECUTIVE_EMPTY = 3;
+  let consecutiveNoUniquePages = 0;
+  const MAX_CONSECUTIVE_NO_UNIQUE = 3;
   let totalFilteredOut = 0;
 
   while (true) {
@@ -243,28 +277,35 @@ export async function fetchCaregivers({
     const batch = result.caregivers;
     const originalCount = result.originalCount;
 
-    const uniqueBatch = batch.filter((caregiver) => {
+    // Filter out caregivers without IDs, but DON'T filter duplicates
+    // We need to fetch all users (including duplicates) to get updates
+    // The database UPSERT will handle deduplication and updates
+    const validBatch = batch.filter((caregiver) => {
       if (!caregiver?.id) {
         logger.warn(`⚠️ Caregiver user missing ID on page ${currentPage}`);
         return false;
       }
-      if (seenIds.has(caregiver.id)) {
-        logger.debug(
-          `   ⚠️ Duplicate caregiver ID ${caregiver.id} detected on page ${currentPage}, skipping`
-        );
-        return false;
-      }
-      seenIds.add(caregiver.id);
       return true;
     });
 
-    const duplicatesCount = batch.length - uniqueBatch.length;
+    // Track seen IDs for loop detection (but still fetch duplicates to allow updates)
+    let newUniqueIds = 0;
+    for (const caregiver of validBatch) {
+      if (!seenIds.has(caregiver.id)) {
+        seenIds.add(caregiver.id);
+        newUniqueIds++;
+      } else {
+        logger.debug(`   ℹ️  Duplicate caregiver ID ${caregiver.id} detected on page ${currentPage} (will still fetch to check for updates)`);
+      }
+    }
+
+    const duplicatesCount = validBatch.length - newUniqueIds;
     if (duplicatesCount > 0) {
-      logger.warn(`⚠️ Found ${duplicatesCount} duplicate caregiver user(s) on page ${currentPage}`);
+      logger.debug(`ℹ️  Found ${duplicatesCount} duplicate caregiver user(s) on page ${currentPage} (fetching anyway to check for updates)`);
     }
 
     logger.debug(
-      `📄 Caregivers page ${currentPage}: API returned ${originalCount}, after filtering: ${batch.length}, unique: ${uniqueBatch.length}`
+      `📄 Caregivers page ${currentPage}: API returned ${originalCount}, after filtering: ${validBatch.length}, new unique IDs: ${newUniqueIds}`
     );
 
     if (originalCount === 0) {
@@ -282,15 +323,36 @@ export async function fetchCaregivers({
 
     consecutiveEmptyPages = 0;
 
-    if (originalCount > batch.length) {
-      const filteredThisPage = originalCount - batch.length;
+    // Check if all items on this page are duplicates (0 new unique IDs but API returned items)
+    // This happens when the API starts returning only duplicates (infinite loop detection)
+    // We still fetch them to allow updates, but stop pagination if it's clearly a loop
+    if (newUniqueIds === 0 && originalCount > 0) {
+      consecutiveNoUniquePages++;
+      if (consecutiveNoUniquePages >= MAX_CONSECUTIVE_NO_UNIQUE) {
+        logger.info(
+          `✅ Reached end of caregivers at page ${currentPage} (${consecutiveNoUniquePages} consecutive pages with 0 new unique IDs - infinite loop detected, stopping pagination)`
+        );
+        break;
+      }
+      logger.debug(
+        `   All items on page ${currentPage} are duplicates (0 new unique IDs), fetching anyway for updates... (${consecutiveNoUniquePages}/${MAX_CONSECUTIVE_NO_UNIQUE})`
+      );
+      // Continue to next page even if all duplicates (to allow updates)
+      // But we'll break if this happens too many times in a row
+    } else {
+      consecutiveNoUniquePages = 0;
+    }
+
+    if (originalCount > validBatch.length) {
+      const filteredThisPage = originalCount - validBatch.length;
       totalFilteredOut += filteredThisPage;
       logger.debug(
         `   ℹ️  ${filteredThisPage} caregiver user(s) filtered out on page ${currentPage} (status filter)`
       );
     }
 
-    allCaregivers.push(...uniqueBatch);
+    // Fetch ALL valid caregivers (including duplicates) - database UPSERT will handle updates
+    allCaregivers.push(...validBatch);
     pagesFetched += 1;
 
     if (originalCount < pageSize) {

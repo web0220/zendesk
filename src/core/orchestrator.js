@@ -115,6 +115,19 @@ export async function runSync() {
       logger.info(
         `📋 Found ${usersWithStatusChange.length} users with potential status change. Fetching current status from AlayaCare...`
       );
+      
+      // Log removed/inactive users
+      logger.info("📋 Users not found in current sync (may be inactive/removed):");
+      usersWithStatusChange.slice(0, 20).forEach((user) => {
+        const userType = user.user_type || "unknown";
+        const userName = user.name || user.external_id || "unknown";
+        logger.info(
+          `   ➖ ${userType.toUpperCase()}: ${userName} (AC ID: ${user.ac_id}, Zendesk ID: ${user.zendesk_user_id || "N/A"})`
+        );
+      });
+      if (usersWithStatusChange.length > 20) {
+        logger.info(`   ... and ${usersWithStatusChange.length - 20} more users`);
+      }
 
       // Fetch status updates with concurrency control
       const statusUpdateTasks = usersWithStatusChange.map((user) => async () => {
@@ -203,6 +216,9 @@ export async function runSync() {
     let totalIdentitiesSynced = 0;
     let totalClientsProcessed = 0;
     let totalCaregiversProcessed = 0;
+    let totalCreated = 0;
+    let totalUpdated = 0;
+    let totalFailed = 0;
 
     const tasks = batches.map((batch, index) => async () => {
       logger.info(`➡️ Processing batch ${index + 1}/${batches.length}`);
@@ -271,8 +287,14 @@ export async function runSync() {
         const acId = String(matchedUserData.ac_id);
 
         if (jobResult.status === "Created" || jobResult.status === "Updated") {
-          if (jobResult.status === "Created") batchCreated++;
-          if (jobResult.status === "Updated") batchUpdated++;
+          if (jobResult.status === "Created") {
+            batchCreated++;
+            totalCreated++;
+          }
+          if (jobResult.status === "Updated") {
+            batchUpdated++;
+            totalUpdated++;
+          }
 
           updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType);
           totalMappingsUpdated++;
@@ -283,14 +305,31 @@ export async function runSync() {
             totalCaregiversProcessed++;
           }
 
-          // logger.debug(
-          //   `🔄 Updated ${userType}: ac_id=${acId} → zendesk_user_id=${jobResult.id}`
-          // );
+          // Log user creation/update with details
+          const userName = matchedUserData.name || matchedUserData.external_id || "unknown";
+          const action = jobResult.status === "Created" ? "➕ CREATED" : "🔄 UPDATED";
+          logger.info(
+            `${action} ${userType.toUpperCase()}: ${userName} (AC ID: ${acId}, Zendesk ID: ${jobResult.id})`
+          );
+          logger.info(
+            `   📧 Email: ${matchedUserData.email || "N/A"} | 📞 Phone: ${matchedUserData.phone || "N/A"} | 🏢 Org: ${matchedUserData.organization_id || "N/A"}`
+          );
+          if (matchedUserData.identities && matchedUserData.identities.length > 0) {
+            const identitySummary = matchedUserData.identities
+              .map((id) => `${id.type}:${id.value}`)
+              .slice(0, 3)
+              .join(", ");
+            const moreCount = matchedUserData.identities.length > 3 
+              ? ` (+${matchedUserData.identities.length - 3} more)` 
+              : "";
+            logger.info(`   🔗 Identities: ${identitySummary}${moreCount}`);
+          }
 
           await syncUserIdentities(jobResult.id, matchedUserData);
           totalIdentitiesSynced++;
         } else {
           batchFailed++;
+          totalFailed++;
           const userName = matchedUserData.name || matchedUserData.external_id || "unknown";
           logger.warn(`⚠️ Skipping ${userType} ${userName}: status=${jobResult.status}`);
           logger.warn(`   📋 Failed ${userType} details:`);
@@ -356,12 +395,19 @@ export async function runSync() {
       (user) => user.user_fields?.type === "caregiver"
     ).length;
 
-    logger.info(
-      `📊 Summary: ${totalMappingsUpdated} mappings updated, ${totalIdentitiesSynced} identities synced`
-    );
+    // Final summary with detailed counts
+    logger.info("═══════════════════════════════════════════════════════════");
+    logger.info("📊 SYNC SUMMARY");
+    logger.info("═══════════════════════════════════════════════════════════");
     logger.info(`   💾 Saved to database: ${savedCount} users`);
+    logger.info(`   ➕ Created in Zendesk: ${totalCreated} users`);
+    logger.info(`   🔄 Updated in Zendesk: ${totalUpdated} users`);
+    logger.info(`   ❌ Failed to sync: ${totalFailed} users`);
+    logger.info(`   ➖ Removed/Inactive: ${usersWithStatusChange.length} users`);
+    logger.info(`   🔗 Identities synced: ${totalIdentitiesSynced}`);
     logger.info(`   👥 Clients: ${totalClientsProcessed}/${expectedClients} processed`);
     logger.info(`   👥 Caregivers: ${totalCaregiversProcessed}/${expectedCaregivers} processed`);
+    logger.info("═══════════════════════════════════════════════════════════");
 
     if (totalProcessed < totalExpected * 0.9) {
       logger.error(
