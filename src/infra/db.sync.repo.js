@@ -112,9 +112,9 @@ function saveMappedDataInternal(mappedData) {
     null,
     null
   );
-  logger.debug(
-    `💾 Saved mapped data: ac_id=${acKey}, source_ac_id=${sourceAcId}, type=${fields.user_type}`
-  );
+  // logger.debug(
+  //   `💾 Saved mapped data: ac_id=${acKey}, source_ac_id=${sourceAcId}, type=${fields.user_type}`
+  // );
   return true;
 }
 
@@ -145,14 +145,14 @@ export function getUsersPendingSync() {
     "SELECT * FROM user_mappings WHERE zendesk_user_id IS NULL ORDER BY created_at ASC"
   );
   const users = stmt.all().map(hydrateMapping);
-  logger.debug(
-    `📋 Found ${users.length} users pending sync: ${users
-      .map(
-        (u) =>
-          `ac_id=${u.ac_id}, source=${u.source_ac_id || "n/a"}, type=${u.user_type || "unknown"}`
-      )
-      .join(" | ")}`
-  );
+  // logger.debug(
+  //   `📋 Found ${users.length} users pending sync: ${users
+  //     .map(
+  //       (u) =>
+  //         `ac_id=${u.ac_id}, source=${u.source_ac_id || "n/a"}, type=${u.user_type || "unknown"}`
+  //     )
+  //     .join(" | ")}`
+  // );
   return users;
 }
 

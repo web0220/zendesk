@@ -283,9 +283,9 @@ export async function runSync() {
             totalCaregiversProcessed++;
           }
 
-          logger.debug(
-            `🔄 Updated ${userType}: ac_id=${acId} → zendesk_user_id=${jobResult.id}`
-          );
+          // logger.debug(
+          //   `🔄 Updated ${userType}: ac_id=${acId} → zendesk_user_id=${jobResult.id}`
+          // );
 
           await syncUserIdentities(jobResult.id, matchedUserData);
           totalIdentitiesSynced++;

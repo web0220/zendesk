@@ -115,9 +115,9 @@ export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at, user
       `⚠️  Could not update zendesk_user_id for ac_id=${ac_id} (lookupKey=${lookupKey}). Record not found.`
     );
   } else {
-    logger.debug(
-      `🔄 Updated zendesk_user_id: ac_id=${ac_id} (lookup=${lookupKey}) → zendesk_user_id=${zendesk_user_id}`
-    );
+    // logger.debug(
+    //   `🔄 Updated zendesk_user_id: ac_id=${ac_id} (lookup=${lookupKey}) → zendesk_user_id=${zendesk_user_id}`
+    // );
   }
 }
 
