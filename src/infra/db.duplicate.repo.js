@@ -138,6 +138,7 @@ function findEmailGroups(allUsers) {
 /**
  * Select the primary user from an email group.
  * Priority: 1) zendesk_primary = 1, 2) already synced, 3) first user
+ * Logs a warning if no zendesk_primary user is found.
  */
 function selectPrimaryUserForEmailGroup(group) {
   // First, try to find a user with zendesk_primary = 1
@@ -146,13 +147,21 @@ function selectPrimaryUserForEmailGroup(group) {
     return primaryTagged;
   }
 
+  // Log warning if no zendesk_primary user found
+  const userList = group.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ");
+  logger.warn(
+    `⚠️  No zendesk_primary user found in email group. Users: ${userList}. Selecting fallback primary.`
+  );
+
   // Second, prefer already synced users (they're more stable)
   const synced = group.filter((u) => u.zendesk_user_id != null);
   if (synced.length > 0) {
+    logger.info(`   Selected already-synced user as primary: ${synced[0].ac_id}`);
     return synced[0];
   }
 
-  // Otherwise, just pick the first one
+  // Otherwise, just pick the first one (random selection)
+  logger.info(`   Selected first user as primary: ${group[0].ac_id}`);
   return group[0];
 }
 
@@ -339,9 +348,29 @@ function processPhoneDuplicates() {
     }
 
     // Select primary user for this phone group (prefer zendesk_primary)
-    const primaryUser = phoneGroup.find((u) => u.zendesk_primary === 1 || u.zendesk_primary === true) || 
-                        phoneGroup.find((u) => u.zendesk_user_id != null) ||
-                        phoneGroup[0];
+    const primaryTagged = phoneGroup.find((u) => u.zendesk_primary === 1 || u.zendesk_primary === true);
+    let primaryUser;
+    
+    if (primaryTagged) {
+      primaryUser = primaryTagged;
+    } else {
+      // Log warning if no zendesk_primary user found
+      const userList = phoneGroup.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ");
+      logger.warn(
+        `⚠️  No zendesk_primary user found in phone group (phone=${phone}). Users: ${userList}. Selecting fallback primary.`
+      );
+      
+      // Fallback: prefer already synced users, then first user
+      const synced = phoneGroup.filter((u) => u.zendesk_user_id != null);
+      if (synced.length > 0) {
+        primaryUser = synced[0];
+        logger.info(`   Selected already-synced user as primary: ${primaryUser.ac_id}`);
+      } else {
+        primaryUser = phoneGroup[0];
+        logger.info(`   Selected first user as primary: ${primaryUser.ac_id}`);
+      }
+    }
+    
     const duplicateUsers = phoneGroup.filter((u) => u.ac_id !== primaryUser.ac_id);
 
     // Skip if already processed
