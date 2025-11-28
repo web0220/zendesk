@@ -76,6 +76,67 @@ function extractZendeskPrimary(tags = []) {
     .some((tag) => tag === "zendesk primary");
 }
 
+/**
+ * Maps client status from AlayaCare to Zendesk tag format
+ * @param {string|null} status - Raw status from AlayaCare
+ * @returns {string|null} Formatted status tag (e.g., 'cl_active', 'cl_on_hold')
+ */
+function mapClientStatus(status) {
+  if (!status) return "cl_not_set";
+  
+  const normalizedStatus = status.trim().toLowerCase();
+  
+  // Map specific status values to Zendesk tags
+  const statusMap = {
+    "active": "cl_active",
+    "onhold": "cl_on_hold",
+    "on hold": "cl_on_hold",
+    "discharged": "cl_discharged",
+    "waiting list": "cl_waiting_list",
+    "waitinglist": "cl_waiting_list",
+    "not set": "cl_not_set",
+    "notset": "cl_not_set",
+  };
+  
+  // Check exact match first
+  if (statusMap[normalizedStatus]) {
+    return statusMap[normalizedStatus];
+  }
+  
+  // Fallback: normalize spaces and convert to tag format
+  return `cl_${normalizedStatus.replace(/\s+/g, "_")}`;
+}
+
+/**
+ * Maps caregiver status from AlayaCare to Zendesk tag format
+ * @param {string|null} status - Raw status from AlayaCare
+ * @returns {string|null} Formatted status tag (e.g., 'cg_active', 'cg_suspended')
+ */
+function mapCaregiverStatus(status) {
+  if (!status) return null;
+  
+  const normalizedStatus = status.trim().toLowerCase();
+  
+  // Map specific status values to Zendesk tags
+  const statusMap = {
+    "active": "cg_active",
+    "suspended": "cg_suspended",
+    "hold": "cg_hold",
+    "terminated": "cg_terminated",
+    "pending": "cg_pending",
+    "applicant": "cg_applicant",
+    "rejected": "cg_rejected",
+  };
+  
+  // Check exact match first
+  if (statusMap[normalizedStatus]) {
+    return statusMap[normalizedStatus];
+  }
+  
+  // Fallback: normalize spaces and convert to tag format
+  return `cg_${normalizedStatus.replace(/\s+/g, "_")}`;
+}
+
 function determineOrganizationId(allEmails, type) {
   const isMember = allEmails.some(
     (email) => typeof email === "string" && email.toLowerCase().includes("@alvitacare.com")
@@ -141,27 +202,34 @@ export function normalizeClientRecord(client) {
     const primaryPhone = phones.length > 0 ? phones[0] : null;
 
     let emailDetails = collectAllEmailDetails(client, demographics);
-    let emails = emailDetails.map((entry) => entry.email);
-    emails = removeInternalEmails(emails);
-
-    let primaryEmail = emails.length > 0 ? emails[0] : null;
+    let allEmailsCollected = emailDetails.map((entry) => entry.email);
+    
+    // Filter internal emails only from primary email selection, but keep them for identities
+    let emailsForPrimary = removeInternalEmails([...allEmailsCollected]);
+    let primaryEmail = emailsForPrimary.length > 0 ? emailsForPrimary[0] : null;
 
     if (!primaryEmail) {
       const allFoundEmails = findEmailsDeep(client);
       const uniqueValidEmails = [...new Set(allFoundEmails)];
-      if (uniqueValidEmails.length > 0) {
-        primaryEmail = uniqueValidEmails[0];
+      // Filter internal emails from found emails for primary selection
+      const validEmailsForPrimary = removeInternalEmails(uniqueValidEmails);
+      if (validEmailsForPrimary.length > 0) {
+        primaryEmail = validEmailsForPrimary[0];
+        // Add all found emails (including internal) to the full list
         uniqueValidEmails.forEach((email) => {
-          if (!emails.includes(email)) {
-            emails.push(email);
+          if (!allEmailsCollected.includes(email)) {
+            allEmailsCollected.push(email);
           }
         });
       }
     }
 
-    if (!primaryEmail && emails.length > 0) {
-      primaryEmail = emails[0];
+    if (!primaryEmail && emailsForPrimary.length > 0) {
+      primaryEmail = emailsForPrimary[0];
     }
+    
+    // Use all emails (including internal) for identities and organization detection
+    let emails = allEmailsCollected;
 
     const market = client.branch?.name || extractMarket(groups) || null;
     const coordinator = extractCoordinatorPod(groups) || null;
@@ -182,8 +250,9 @@ export function normalizeClientRecord(client) {
       .slice(1)
       .map((phone) => ({ type: "phone", value: phone }))
       .filter((identity) => identity.value);
+    // Include all emails (except primary) in identities, including @alvitacare.com emails
     const emailIdentities = emails
-      .slice(1)
+      .filter((email) => email && email !== primaryEmail)
       .map((email) => ({ type: "email", value: email }))
       .filter((identity) => identity.value);
 
@@ -191,7 +260,7 @@ export function normalizeClientRecord(client) {
       ? coordinator.split(",")[0].trim().replace(/\s+/g, "_").toLowerCase()
       : null;
     const caseRatingValue = caseRating ? caseRating.replace(/\s+/g, "_").toLowerCase() : null;
-    const clientStatusValue = status ? `cl_${status.replace(/\s+/g, "_").toLowerCase()}` : null;
+    const clientStatusValue = mapClientStatus(status);
 
     const clinicalRNManagerArray = clinicalRNManager
       ? clinicalRNManager
@@ -206,8 +275,9 @@ export function normalizeClientRecord(client) {
           .filter(Boolean)
       : null;
 
-    const allEmails = [primaryEmail, ...emails.slice(1)].filter(Boolean);
-    const organizationId = determineOrganizationId(allEmails, "client");
+    // Include all emails (including internal) for organization detection
+    const allEmailsForOrg = [primaryEmail, ...emails.filter(e => e !== primaryEmail)].filter(Boolean);
+    const organizationId = determineOrganizationId(allEmailsForOrg, "client");
     const externalId = client.id ? `client_${client.id}` : null;
 
     return {
@@ -296,7 +366,7 @@ export function normalizeCaregiverRecord(caregiver) {
     const departmentNames = departmentArray.length > 0 ? departmentArray : null;
 
     const zendeskPrimary = extractZendeskPrimary(tags);
-    const caregiverStatusValue = status ? `cg_${status.replace(/\s+/g, "_").toLowerCase()}` : null;
+    const caregiverStatusValue = mapCaregiverStatus(status);
 
     const phoneIdentities = phones
       .slice(1)

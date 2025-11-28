@@ -74,14 +74,14 @@ export async function addIdentities(userId, identities = []) {
   const formatted = normalizeIdentities(identities);
   if (!userId || formatted.length === 0) return;
 
-  logger.info(`📞 Adding ${formatted.length} identity/identities for user ${userId}...`);
+  // logger.info(`📞 Adding ${formatted.length} identity/identities for user ${userId}...`);
 
   for (const identity of formatted) {
     try {
       await callZendesk(() =>
         getZendeskClient().post(`/users/${userId}/identities.json`, { identity })
       );
-      logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
+      // logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {
       const msg = err.response?.data || err.message;
 
@@ -105,7 +105,7 @@ export async function syncUserIdentities(userId, userData) {
     existingIdentities.map((identity) => identity.value?.toLowerCase().trim())
   );
 
-  logger.info(`📋 User ${userId} has ${existingIdentities.length} existing identities`);
+  // logger.info(`📋 User ${userId} has ${existingIdentities.length} existing identities`);
 
   const identitiesToAdd = [];
 
@@ -114,7 +114,7 @@ export async function syncUserIdentities(userId, userData) {
       const normalizedValue = identity.value?.toLowerCase().trim();
 
       if (existingValues.has(normalizedValue)) {
-        logger.debug(`   ⏭️  Skipping duplicate ${identity.type}: ${identity.value}`);
+        // logger.debug(`   ⏭️  Skipping duplicate ${identity.type}: ${identity.value}`);
         continue;
       }
 
@@ -124,18 +124,18 @@ export async function syncUserIdentities(userId, userData) {
   }
 
   if (identitiesToAdd.length === 0) {
-    logger.info(`   ✅ No new identities to add for user ${userId}`);
+    // logger.info(`   ✅ No new identities to add for user ${userId}`);
     return;
   }
 
-  logger.info(`📞 Adding ${identitiesToAdd.length} new identities for user ${userId}`);
+  // logger.info(`📞 Adding ${identitiesToAdd.length} new identities for user ${userId}`);
 
   for (const identity of identitiesToAdd) {
     try {
       await callZendesk(() =>
         getZendeskClient().post(`/users/${userId}/identities.json`, { identity })
       );
-      logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
+      // logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {
       const msg = err.response?.data || err.message;
 

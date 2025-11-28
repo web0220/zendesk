@@ -18,6 +18,7 @@ const columnsToAdd = [
   { name: "zendesk_primary", def: "zendesk_primary INTEGER DEFAULT 0" },
   { name: "shared_phone_number", def: "shared_phone_number TEXT" },
   { name: "source_ac_id", def: "source_ac_id TEXT" },
+  { name: "current_active", def: "current_active INTEGER DEFAULT 0" },
 ];
 
 export function ensureSchema(db) {
@@ -87,6 +88,11 @@ export function ensureSchema(db) {
     db,
     "idx_caregiver_status",
     "CREATE INDEX IF NOT EXISTS idx_caregiver_status ON user_mappings(caregiver_status)"
+  );
+  ensureIndexExists(
+    db,
+    "idx_current_active",
+    "CREATE INDEX IF NOT EXISTS idx_current_active ON user_mappings(current_active)"
   );
 
   logger.info("✅ Database tables initialized");
