@@ -114,7 +114,7 @@ export async function syncUserIdentities(userId, userData) {
       const normalizedValue = identity.value?.toLowerCase().trim();
 
       if (existingValues.has(normalizedValue)) {
-        logger.debug(`   ⏭️  Skipping duplicate ${identity.type}: ${identity.value}`);
+        // logger.debug(`   ⏭️  Skipping duplicate ${identity.type}: ${identity.value}`);
         continue;
       }
 
@@ -135,7 +135,7 @@ export async function syncUserIdentities(userId, userData) {
       await callZendesk(() =>
         getZendeskClient().post(`/users/${userId}/identities.json`, { identity })
       );
-      logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
+      // logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {
       const msg = err.response?.data || err.message;
 
