@@ -14,7 +14,7 @@ import {
   resetCurrentActiveFlag,
   getUsersWithStatusChange,
   fetchAndUpdateUserStatus,
-  getUsersByAcIds,
+  getAllUsersForSync,
 } from "../infra/database.js";
 
 const BATCH_LIMIT = 100;
@@ -179,37 +179,21 @@ export async function runSync() {
       logger.info("✅ No users with status changes detected.");
     }
 
-    logger.info("📖 Reading users from database for Zendesk sync...");
-    const usersFromDb = getUsersPendingSync();
+    logger.info("📖 Reading ALL users from database for Zendesk sync...");
+    // Send ALL users from database to Zendesk to ensure it's always in sync
+    // This includes newly added users, updated users, and users with status changes
+    const allUsersForSync = getAllUsersForSync();
     
-    // Re-read users with updated status from database to get fresh data (including updated status)
-    // This fixes the race condition where we were using old in-memory objects
-    let usersWithUpdatedStatus = [];
-    if (usersWithStatusChange && usersWithStatusChange.length > 0) {
-      const updatedAcIds = usersWithStatusChange.map((u) => u.ac_id);
-      usersWithUpdatedStatus = getUsersByAcIds(updatedAcIds);
-      logger.info(
-        `🔄 Re-read ${usersWithUpdatedStatus.length} users with updated status from database (to get fresh status data)`
-      );
-    }
+    logger.info(
+      `📋 Sending ${allUsersForSync.length} total users to Zendesk (includes new users, updated users, and users with status changes)`
+    );
     
-    // Also include users with updated status (even if already synced) - Option B
-    // These users need to be re-synced to update their status in Zendesk
-    const allUsersForSync = [...usersFromDb];
-    
-    // Add users with updated status to sync list (avoid duplicates)
-    const existingAcIds = new Set(usersFromDb.map((u) => u.ac_id));
-    for (const user of usersWithUpdatedStatus) {
-      if (!existingAcIds.has(user.ac_id)) {
-        allUsersForSync.push(user);
-      }
-    }
-    
-    if (usersWithUpdatedStatus.length > 0) {
-      logger.info(
-        `🔄 Including ${usersWithUpdatedStatus.length} users with updated status in Zendesk sync (to update their status in Zendesk)`
-      );
-    }
+    // Log breakdown of users being sent
+    const newUsers = allUsersForSync.filter((u) => !u.zendesk_user_id).length;
+    const alreadySyncedUsers = allUsersForSync.filter((u) => u.zendesk_user_id).length;
+    logger.info(
+      `   📊 Breakdown: ${newUsers} new users, ${alreadySyncedUsers} already synced users (will be updated in Zendesk)`
+    );
     
     if (allUsersForSync.length === 0) {
       logger.info("✅ No users pending sync. All users are already synced.");

@@ -170,23 +170,19 @@ export function getUsersPendingSync() {
 }
 
 /**
- * Gets users from database by their ac_id list.
- * This is used to re-read users after status updates to get fresh data.
+ * Gets ALL users from database that should be synced to Zendesk.
+ * This includes both new users (pending sync) and already synced users.
+ * We send all users to ensure Zendesk is always in sync with our database.
  * 
- * @param {Array<string>} acIds - Array of ac_id values to fetch
- * @returns {Array} Array of user records from database
+ * @returns {Array} Array of all user records from database
  */
-export function getUsersByAcIds(acIds) {
-  if (!acIds || acIds.length === 0) {
-    return [];
-  }
+export function getAllUsersForSync() {
   const db = getDb();
-  const placeholders = acIds.map(() => "?").join(",");
   const stmt = db.prepare(
-    `SELECT * FROM user_mappings WHERE ac_id IN (${placeholders})`
+    "SELECT * FROM user_mappings ORDER BY created_at ASC"
   );
-  const users = stmt.all(...acIds).map(hydrateMapping);
-  logger.debug(`📋 Fetched ${users.length} users by ac_id list`);
+  const users = stmt.all().map(hydrateMapping);
+  logger.info(`📋 Found ${users.length} total users in database to sync to Zendesk`);
   return users;
 }
 
