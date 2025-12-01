@@ -7,6 +7,7 @@ export {
   resetCurrentActiveFlag,
   getUsersWithStatusChange,
   fetchAndUpdateUserStatus,
+  getUsersByAcIds,
 } from "./db.sync.repo.js";
 export {
   upsertUserMapping,

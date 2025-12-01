@@ -14,6 +14,7 @@ import {
   resetCurrentActiveFlag,
   getUsersWithStatusChange,
   fetchAndUpdateUserStatus,
+  getUsersByAcIds,
 } from "../infra/database.js";
 
 const BATCH_LIMIT = 100;
@@ -156,13 +157,20 @@ export async function runSync() {
     logger.info("📖 Reading users from database for Zendesk sync...");
     const usersFromDb = getUsersPendingSync();
     
+    // Re-read users with updated status from database to get fresh data (including updated status)
+    // This fixes the race condition where we were using old in-memory objects
+    let usersWithUpdatedStatus = [];
+    if (usersWithStatusChange && usersWithStatusChange.length > 0) {
+      const updatedAcIds = usersWithStatusChange.map((u) => u.ac_id);
+      usersWithUpdatedStatus = getUsersByAcIds(updatedAcIds);
+      logger.info(
+        `🔄 Re-read ${usersWithUpdatedStatus.length} users with updated status from database (to get fresh status data)`
+      );
+    }
+    
     // Also include users with updated status (even if already synced) - Option B
     // These users need to be re-synced to update their status in Zendesk
     const allUsersForSync = [...usersFromDb];
-    const usersWithUpdatedStatus = usersWithStatusChange.filter((user) => {
-      // Include all users with status change - they should be re-synced to update Zendesk
-      return true;
-    });
     
     // Add users with updated status to sync list (avoid duplicates)
     const existingAcIds = new Set(usersFromDb.map((u) => u.ac_id));
@@ -196,6 +204,37 @@ export async function runSync() {
 
     const zendeskUsers = hydrateEntitiesFromDb(allUsersForSync);
     logger.info(`📦 Converted ${zendeskUsers.length} database records into Zendesk payloads`);
+    
+    // Debug: Log status values being sent to Zendesk
+    const usersWithStatus = zendeskUsers.filter((u) => {
+      const status = u.user_fields?.client_status || u.user_fields?.caregiver_status;
+      return status;
+    });
+    if (usersWithStatus.length > 0) {
+      logger.debug(`📋 ${usersWithStatus.length} users have status to send to Zendesk`);
+      usersWithStatus.slice(0, 5).forEach((u) => {
+        const status = u.user_fields?.client_status || u.user_fields?.caregiver_status;
+        const userType = u.user_fields?.type || "unknown";
+        logger.debug(`   ${userType}: ${u.name} - status: ${status}`);
+      });
+    }
+    
+    // Debug: Check for users that should have status but don't
+    const usersMissingStatus = zendeskUsers.filter((u) => {
+      const userType = u.user_fields?.type;
+      const hasStatusField = userType === "client" 
+        ? u.user_fields?.client_status 
+        : userType === "caregiver" 
+        ? u.user_fields?.caregiver_status 
+        : false;
+      return userType && !hasStatusField;
+    });
+    if (usersMissingStatus.length > 0) {
+      logger.warn(`⚠️ ${usersMissingStatus.length} users missing status in payload (may be company members or null status)`);
+      usersMissingStatus.slice(0, 5).forEach((u) => {
+        logger.debug(`   ${u.user_fields?.type}: ${u.name} - missing status`);
+      });
+    }
 
     const batches = chunkArray(zendeskUsers, BATCH_LIMIT);
     logger.info(

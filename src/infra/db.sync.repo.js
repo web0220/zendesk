@@ -2,6 +2,7 @@ import { logger } from "../config/logger.js";
 import { extractMappedFields, buildStorageKeys, hydrateMapping } from "../domain/user.db.mapper.js";
 import { getDb } from "./db.api.js";
 import { fetchClientDetail, fetchCaregiverDetail } from "../services/alayacare/alayacare.api.js";
+import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
 
 const ALVITA_COMPANY_ORG_ID = "40994316312731";
 
@@ -29,13 +30,20 @@ function initializePreparedStatements() {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     ON CONFLICT(ac_id) DO UPDATE SET
-      external_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.external_id ELSE external_id END,
-      name = CASE WHEN zendesk_user_id IS NULL THEN excluded.name ELSE name END,
-      email = CASE WHEN zendesk_user_id IS NULL THEN excluded.email ELSE email END,
-      phone = CASE WHEN zendesk_user_id IS NULL THEN excluded.phone ELSE phone END,
-      organization_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.organization_id ELSE organization_id END,
-      user_type = CASE WHEN zendesk_user_id IS NULL THEN excluded.user_type ELSE user_type END,
-      source_ac_id = CASE WHEN zendesk_user_id IS NULL THEN excluded.source_ac_id ELSE source_ac_id END,
+      -- ac_id is the PRIMARY KEY - NEVER update it (used to identify the row)
+      -- Always update these fields from fresh API data (even for already-synced users)
+      -- This ensures we capture any changes in AlayaCare (name, email, phone, etc.)
+      external_id = excluded.external_id,
+      name = excluded.name,
+      email = excluded.email,
+      phone = excluded.phone,
+      organization_id = excluded.organization_id,
+      user_type = excluded.user_type,
+      -- source_ac_id is the original AlayaCare ID used to fetch user details
+      -- Preserve it for existing users (needed for fetchAndUpdateUserStatus)
+      -- Only update if not already set (for new users)
+      source_ac_id = CASE WHEN source_ac_id IS NULL OR source_ac_id = '' THEN excluded.source_ac_id ELSE source_ac_id END,
+      -- Always update group/tag-based fields from fresh API data
       coordinator_pod = excluded.coordinator_pod,
       case_rating = excluded.case_rating,
       client_status = excluded.client_status,
@@ -46,9 +54,14 @@ function initializePreparedStatements() {
       market = excluded.market,
       identities = excluded.identities,
       zendesk_primary = excluded.zendesk_primary,
+      -- shared_phone_number should only be set for new users (duplicate handling)
+      -- For existing users, preserve it (it's set by duplicate processing)
       shared_phone_number = CASE WHEN zendesk_user_id IS NULL THEN excluded.shared_phone_number ELSE shared_phone_number END,
+      -- Mark as active (found in current sync)
       current_active = 1,
       updated_at = CURRENT_TIMESTAMP
+      -- Note: zendesk_user_id is NOT updated here - it's preserved for already-synced users
+      -- Note: ac_id is NOT updated here - it's the primary key used to identify the row
   `);
 
   selectZendeskIdStmt = db.prepare("SELECT zendesk_user_id FROM user_mappings WHERE ac_id = ?");
@@ -153,6 +166,27 @@ export function getUsersPendingSync() {
   //     )
   //     .join(" | ")}`
   // );
+  return users;
+}
+
+/**
+ * Gets users from database by their ac_id list.
+ * This is used to re-read users after status updates to get fresh data.
+ * 
+ * @param {Array<string>} acIds - Array of ac_id values to fetch
+ * @returns {Array} Array of user records from database
+ */
+export function getUsersByAcIds(acIds) {
+  if (!acIds || acIds.length === 0) {
+    return [];
+  }
+  const db = getDb();
+  const placeholders = acIds.map(() => "?").join(",");
+  const stmt = db.prepare(
+    `SELECT * FROM user_mappings WHERE ac_id IN (${placeholders})`
+  );
+  const users = stmt.all(...acIds).map(hydrateMapping);
+  logger.debug(`📋 Fetched ${users.length} users by ac_id list`);
   return users;
 }
 
@@ -267,15 +301,16 @@ function formatStatusForStorage(status, userType) {
 }
 
 /**
- * Fetches current status from AlayaCare API and updates the user record in database.
- * Handles errors gracefully (404 for deleted users, network errors with retry).
+ * Fetches current user data from AlayaCare API and updates ALL fields in the database.
+ * This is used for users who are not in the current active sync (may be inactive/terminated).
+ * Updates all user information (name, email, phone, status, etc.) from fresh API data.
  * 
  * @param {Object} user - User record from database
  * @returns {Promise<boolean>} True if update was successful, false otherwise
  */
 export async function fetchAndUpdateUserStatus(user) {
   if (!user || !user.source_ac_id || !user.user_type) {
-    logger.warn(`⚠️ Cannot update status: missing source_ac_id or user_type for ac_id=${user?.ac_id}`);
+    logger.warn(`⚠️ Cannot update user: missing source_ac_id or user_type for ac_id=${user?.ac_id}`);
     return false;
   }
 
@@ -284,7 +319,7 @@ export async function fetchAndUpdateUserStatus(user) {
   const acId = user.ac_id;
 
   try {
-    logger.debug(`📡 Fetching current status for ${userType} ${sourceAcId} (ac_id: ${acId})`);
+    logger.debug(`📡 Fetching full user data for ${userType} ${sourceAcId} (ac_id: ${acId})`);
 
     let fetchedData = null;
     if (userType === "client") {
@@ -304,27 +339,50 @@ export async function fetchAndUpdateUserStatus(user) {
       return true;
     }
 
-    // Extract status from fetched data
-    const rawStatus = fetchedData.status || null;
-    const formattedStatus = rawStatus ? formatStatusForStorage(rawStatus, userType) : null;
-
-    // Check if status actually changed
-    const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
-    if (currentStatus === formattedStatus) {
-      logger.debug(`   ℹ️  Status unchanged for ${userType} ${sourceAcId}: ${formattedStatus || "null"}`);
-      // Still update the record to mark it as checked, but no status change
-      updateUserStatusInDatabase(acId, formattedStatus, userType);
-      return true;
+    // Map the fetched data to UserEntity format (same as in main sync)
+    let entity = null;
+    if (userType === "client") {
+      entity = mapClientUser(fetchedData);
+    } else if (userType === "caregiver") {
+      entity = mapCaregiverUser(fetchedData);
     }
 
-    logger.info(
-      `🔄 Status changed for ${userType} ${sourceAcId}: ${currentStatus || "null"} → ${formattedStatus || "null"}`
-    );
+    if (!entity) {
+      logger.warn(`⚠️ Failed to map ${userType} data for source_ac_id=${sourceAcId}`);
+      return false;
+    }
 
-    // Update database with new status
-    updateUserStatusInDatabase(acId, formattedStatus, userType);
+    // Get the payload from the entity
+    const payload = entity.toZendeskPayload();
+    if (!payload) {
+      logger.warn(`⚠️ Failed to create payload for ${userType} source_ac_id=${sourceAcId}`);
+      return false;
+    }
 
-    return true;
+    // Extract status for logging
+    const rawStatus = fetchedData.status || null;
+    const formattedStatus = rawStatus ? formatStatusForStorage(rawStatus, userType) : null;
+    const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
+
+    // Save/update ALL user fields in database (not just status)
+    // This will update name, email, phone, status, and all other fields from fresh API data
+    const saved = saveMappedDataToDatabase(payload);
+    
+    if (saved) {
+      if (currentStatus !== formattedStatus) {
+        logger.info(
+          `🔄 Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status changed ${currentStatus || "null"} → ${formattedStatus || "null"} (all fields updated from API)`
+        );
+      } else {
+        logger.debug(
+          `✅ Updated ${userType} ${sourceAcId} (ac_id: ${acId}): all fields refreshed from API (status unchanged: ${formattedStatus || "null"})`
+        );
+      }
+      return true;
+    } else {
+      logger.warn(`⚠️ Failed to save updated data for ${userType} ${sourceAcId} (ac_id: ${acId})`);
+      return false;
+    }
   } catch (error) {
     // Handle API errors (network, timeout, etc.)
     if (error.response?.status === 404) {
@@ -335,7 +393,7 @@ export async function fetchAndUpdateUserStatus(user) {
     }
 
     logger.error(
-      `❌ Failed to fetch status for ${userType} ${sourceAcId} (ac_id: ${acId}): ${error.message}`
+      `❌ Failed to fetch and update ${userType} ${sourceAcId} (ac_id: ${acId}): ${error.message}`
     );
     if (error.response) {
       logger.error(`   API Response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
