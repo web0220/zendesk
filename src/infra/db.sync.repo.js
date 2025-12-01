@@ -311,7 +311,7 @@ function formatStatusForStorage(status, userType) {
 export async function fetchAndUpdateUserStatus(user) {
   if (!user || !user.source_ac_id || !user.user_type) {
     logger.warn(`⚠️ Cannot update user: missing source_ac_id or user_type for ac_id=${user?.ac_id}`);
-    return false;
+    return { success: false, statusChanged: false, newStatus: null };
   }
 
   const sourceAcId = user.source_ac_id;
@@ -328,7 +328,7 @@ export async function fetchAndUpdateUserStatus(user) {
       rawStatus = await fetchCaregiverStatusOnly(Number(sourceAcId));
     } else {
       logger.warn(`⚠️ Unknown user_type "${userType}" for ac_id=${acId}`);
-      return false;
+      return { success: false, statusChanged: false, newStatus: null };
     }
 
     // If status is null, user might be deleted (404) or status field is missing
@@ -336,18 +336,21 @@ export async function fetchAndUpdateUserStatus(user) {
     if (rawStatus === null) {
       logger.warn(`⚠️ User ${userType} ${sourceAcId} not found or has no status in AlayaCare (likely deleted). Marking as deleted.`);
       const deletedStatus = formatStatusForStorage("deleted", userType);
+      const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
+      const statusChanged = currentStatus !== deletedStatus;
       updateUserStatusInDatabase(acId, deletedStatus, userType);
-      return true;
+      return { success: true, statusChanged, newStatus: deletedStatus };
     }
 
     // Format status for storage
     const formattedStatus = formatStatusForStorage(rawStatus, userType);
     const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
+    const statusChanged = currentStatus !== formattedStatus;
     
     // Update only the status field in database (optimized for non-active users)
     updateUserStatusInDatabase(acId, formattedStatus, userType);
     
-    if (currentStatus !== formattedStatus) {
+    if (statusChanged) {
       logger.info(
         `🔄 Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status changed ${currentStatus || "null"} → ${formattedStatus || "null"}`
       );
@@ -356,14 +359,16 @@ export async function fetchAndUpdateUserStatus(user) {
         `✅ Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status unchanged (${formattedStatus || "null"})`
       );
     }
-    return true;
+    return { success: true, statusChanged, newStatus: formattedStatus };
   } catch (error) {
     // Handle API errors (network, timeout, etc.)
     if (error.response?.status === 404) {
       logger.warn(`⚠️ User ${userType} ${sourceAcId} not found (404). Marking as deleted.`);
       const deletedStatus = formatStatusForStorage("deleted", userType);
+      const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
+      const statusChanged = currentStatus !== deletedStatus;
       updateUserStatusInDatabase(acId, deletedStatus, userType);
-      return true;
+      return { success: true, statusChanged, newStatus: deletedStatus };
     }
 
     logger.error(
@@ -372,7 +377,7 @@ export async function fetchAndUpdateUserStatus(user) {
     if (error.response) {
       logger.error(`   API Response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
     }
-    return false;
+    return { success: false, statusChanged: false, newStatus: null };
   }
 }
 

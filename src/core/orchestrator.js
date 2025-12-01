@@ -19,6 +19,16 @@ import {
 
 const BATCH_LIMIT = 100;
 const BATCH_CONCURRENCY = Number(process.env.ZENDESK_BATCH_CONCURRENCY) || 5;
+const ALVITA_COMPANY_ORG_ID = "40994316312731";
+
+function isAlvitaCompanyMember(orgId) {
+  if (orgId === null || orgId === undefined) return false;
+  try {
+    return String(orgId) === ALVITA_COMPANY_ORG_ID;
+  } catch {
+    return false;
+  }
+}
 
 function logFetchHealth(clients, caregivers) {
   if (clients.length < 100) {
@@ -112,6 +122,9 @@ export async function runSync() {
     logger.info("🔍 Checking for users with status changes...");
     const usersWithStatusChange = getUsersWithStatusChange();
     
+    // Track status changes with details
+    const statusChanges = [];
+    
     if (usersWithStatusChange.length > 0) {
       logger.info(
         `📋 Found ${usersWithStatusChange.length} users with potential status change. Fetching current status from AlayaCare...`
@@ -132,13 +145,25 @@ export async function runSync() {
 
       // Fetch status updates with concurrency control
       const statusUpdateTasks = usersWithStatusChange.map((user) => async () => {
-        return fetchAndUpdateUserStatus(user);
+        const oldStatus = user.user_type === "client" ? user.client_status : user.caregiver_status;
+        const result = await fetchAndUpdateUserStatus(user);
+        if (result && result.statusChanged) {
+          statusChanges.push({
+            name: user.name || user.external_id || "unknown",
+            userType: user.user_type || "unknown",
+            acId: user.ac_id,
+            zendeskUserId: user.zendesk_user_id,
+            oldStatus: oldStatus || "null",
+            newStatus: result.newStatus || "null",
+          });
+        }
+        return result;
       });
 
       const DETAIL_CONCURRENCY = Number(process.env.ALAYACARE_DETAIL_CONCURRENCY) || 10;
       const statusUpdateResults = await runWithLimit(statusUpdateTasks, DETAIL_CONCURRENCY);
       
-      const successfulUpdates = statusUpdateResults.filter(Boolean).length;
+      const successfulUpdates = statusUpdateResults.filter((r) => r && r.success).length;
       const failedUpdates = statusUpdateResults.length - successfulUpdates;
       
       logger.info(
@@ -191,6 +216,14 @@ export async function runSync() {
       if (usersWithStatusChange.length > 0) {
         logger.info(`   ℹ️  Processed ${usersWithStatusChange.length} status updates (users already synced, status updated in DB)`);
       }
+      
+      // Calculate total counts by type from entities
+      const totalClients = clientEntities.length;
+      const totalCaregivers = caregiverEntities.length;
+      const totalCompanyMembers = [...clientEntities, ...caregiverEntities].filter((e) => 
+        isAlvitaCompanyMember(e.organizationId)
+      ).length;
+      
       return {
         totalUsers: entityPayloads.length,
         savedToDatabase: savedCount,
@@ -199,6 +232,45 @@ export async function runSync() {
         mappingsStored: 0,
         identitiesSynced: 0,
         statusUpdatesProcessed: usersWithStatusChange.length,
+        newlyCreated: {
+          count: 0,
+          users: [],
+          byType: {
+            clients: 0,
+            caregivers: 0,
+            companyMembers: 0,
+          },
+        },
+        updated: {
+          count: 0,
+          users: [],
+          byType: {
+            clients: 0,
+            caregivers: 0,
+            companyMembers: 0,
+          },
+        },
+        statusChanges: {
+          count: statusChanges.length,
+          changes: statusChanges,
+        },
+        countsByType: {
+          clients: {
+            total: totalClients,
+            created: 0,
+            updated: 0,
+          },
+          caregivers: {
+            total: totalCaregivers,
+            created: 0,
+            updated: 0,
+          },
+          companyMembers: {
+            total: totalCompanyMembers,
+            created: 0,
+            updated: 0,
+          },
+        },
       };
     }
 
@@ -258,6 +330,18 @@ export async function runSync() {
     let totalCreated = 0;
     let totalUpdated = 0;
     let totalFailed = 0;
+    
+    // Track newly created and updated users with details
+    const newlyCreatedUsers = [];
+    const updatedUsers = [];
+    
+    // Track counts by type
+    let clientsCreated = 0;
+    let clientsUpdated = 0;
+    let caregiversCreated = 0;
+    let caregiversUpdated = 0;
+    let companyMembersCreated = 0;
+    let companyMembersUpdated = 0;
 
     const tasks = batches.map((batch, index) => async () => {
       logger.info(`➡️ Processing batch ${index + 1}/${batches.length}`);
@@ -326,13 +410,54 @@ export async function runSync() {
         const acId = String(matchedUserData.ac_id);
 
         if (jobResult.status === "Created" || jobResult.status === "Updated") {
+          const userName = matchedUserData.name || matchedUserData.external_id || "unknown";
+          const isCompanyMember = isAlvitaCompanyMember(matchedUserData.organization_id);
+          const currentStatus = userType === "client" 
+            ? matchedUserData.user_fields?.client_status 
+            : userType === "caregiver" 
+            ? matchedUserData.user_fields?.caregiver_status 
+            : null;
+          
           if (jobResult.status === "Created") {
             batchCreated++;
             totalCreated++;
+            newlyCreatedUsers.push({
+              name: userName,
+              userType: userType,
+              acId: acId,
+              zendeskUserId: jobResult.id,
+              isCompanyMember: isCompanyMember,
+            });
+            
+            if (userType === "client") {
+              clientsCreated++;
+            } else if (userType === "caregiver") {
+              caregiversCreated++;
+            }
+            if (isCompanyMember) {
+              companyMembersCreated++;
+            }
           }
           if (jobResult.status === "Updated") {
             batchUpdated++;
             totalUpdated++;
+            updatedUsers.push({
+              name: userName,
+              userType: userType,
+              acId: acId,
+              zendeskUserId: jobResult.id,
+              isCompanyMember: isCompanyMember,
+              status: currentStatus || null,
+            });
+            
+            if (userType === "client") {
+              clientsUpdated++;
+            } else if (userType === "caregiver") {
+              caregiversUpdated++;
+            }
+            if (isCompanyMember) {
+              companyMembersUpdated++;
+            }
           }
 
           updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType);
@@ -345,7 +470,6 @@ export async function runSync() {
           }
 
           // Log user creation/update with details
-          const userName = matchedUserData.name || matchedUserData.external_id || "unknown";
           const action = jobResult.status === "Created" ? "➕ CREATED" : "🔄 UPDATED";
           logger.info(
             `${action} ${userType.toUpperCase()}: ${userName} (AC ID: ${acId}, Zendesk ID: ${jobResult.id})`
@@ -476,6 +600,13 @@ export async function runSync() {
       );
     }
 
+    // Calculate total counts by type
+    const totalClients = zendeskUsers.filter((u) => u.user_fields?.type === "client").length;
+    const totalCaregivers = zendeskUsers.filter((u) => u.user_fields?.type === "caregiver").length;
+    const totalCompanyMembers = zendeskUsers.filter((u) => 
+      isAlvitaCompanyMember(u.organization_id)
+    ).length;
+
     return {
       totalUsers: entityPayloads.length,
       savedToDatabase: savedCount,
@@ -484,6 +615,46 @@ export async function runSync() {
       mappingsStored: totalMappingsUpdated,
       identitiesSynced: totalIdentitiesSynced,
       statusUpdatesProcessed: usersWithStatusChange.length,
+      // New detailed information
+      newlyCreated: {
+        count: totalCreated,
+        users: newlyCreatedUsers,
+        byType: {
+          clients: clientsCreated,
+          caregivers: caregiversCreated,
+          companyMembers: companyMembersCreated,
+        },
+      },
+      updated: {
+        count: totalUpdated,
+        users: updatedUsers,
+        byType: {
+          clients: clientsUpdated,
+          caregivers: caregiversUpdated,
+          companyMembers: companyMembersUpdated,
+        },
+      },
+      statusChanges: {
+        count: statusChanges.length,
+        changes: statusChanges,
+      },
+      countsByType: {
+        clients: {
+          total: totalClients,
+          created: clientsCreated,
+          updated: clientsUpdated,
+        },
+        caregivers: {
+          total: totalCaregivers,
+          created: caregiversCreated,
+          updated: caregiversUpdated,
+        },
+        companyMembers: {
+          total: totalCompanyMembers,
+          created: companyMembersCreated,
+          updated: companyMembersUpdated,
+        },
+      },
     };
   } catch (err) {
     logger.error("❌ Sync failed:", err.response?.data || err.message);
