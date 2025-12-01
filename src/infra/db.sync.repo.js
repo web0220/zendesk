@@ -1,7 +1,7 @@
 import { logger } from "../config/logger.js";
 import { extractMappedFields, buildStorageKeys, hydrateMapping } from "../domain/user.db.mapper.js";
 import { getDb } from "./db.api.js";
-import { fetchClientDetail, fetchCaregiverDetail } from "../services/alayacare/alayacare.api.js";
+import { fetchClientDetail, fetchCaregiverDetail, fetchClientStatusOnly, fetchCaregiverStatusOnly } from "../services/alayacare/alayacare.api.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
 
 const ALVITA_COMPANY_ORG_ID = "40994316312731";
@@ -301,9 +301,9 @@ function formatStatusForStorage(status, userType) {
 }
 
 /**
- * Fetches current user data from AlayaCare API and updates ALL fields in the database.
- * This is used for users who are not in the current active sync (may be inactive/terminated).
- * Updates all user information (name, email, phone, status, etc.) from fresh API data.
+ * Fetches only the status field for non-active users from AlayaCare API.
+ * This is optimized for users who are not in the current active sync (may be inactive/terminated).
+ * Only updates the status field in the database, not all user information.
  * 
  * @param {Object} user - User record from database
  * @returns {Promise<boolean>} True if update was successful, false otherwise
@@ -319,75 +319,44 @@ export async function fetchAndUpdateUserStatus(user) {
   const acId = user.ac_id;
 
   try {
-    logger.debug(`📡 Fetching full user data for ${userType} ${sourceAcId} (ac_id: ${acId})`);
+    logger.debug(`📡 Fetching status only for ${userType} ${sourceAcId} (ac_id: ${acId})`);
 
-    let fetchedData = null;
+    let rawStatus = null;
     if (userType === "client") {
-      fetchedData = await fetchClientDetail(Number(sourceAcId));
+      rawStatus = await fetchClientStatusOnly(Number(sourceAcId));
     } else if (userType === "caregiver") {
-      fetchedData = await fetchCaregiverDetail(Number(sourceAcId));
+      rawStatus = await fetchCaregiverStatusOnly(Number(sourceAcId));
     } else {
       logger.warn(`⚠️ Unknown user_type "${userType}" for ac_id=${acId}`);
       return false;
     }
 
-    if (!fetchedData) {
-      // User not found (404) - mark as deleted
-      logger.warn(`⚠️ User ${userType} ${sourceAcId} not found in AlayaCare (likely deleted). Marking as deleted.`);
+    // If status is null, user might be deleted (404) or status field is missing
+    // We treat null as "deleted" for consistency
+    if (rawStatus === null) {
+      logger.warn(`⚠️ User ${userType} ${sourceAcId} not found or has no status in AlayaCare (likely deleted). Marking as deleted.`);
       const deletedStatus = formatStatusForStorage("deleted", userType);
       updateUserStatusInDatabase(acId, deletedStatus, userType);
       return true;
     }
 
-    // Map the fetched data to UserEntity format (same as in main sync)
-    let entity = null;
-    if (userType === "client") {
-      entity = mapClientUser(fetchedData);
-    } else if (userType === "caregiver") {
-      entity = mapCaregiverUser(fetchedData);
-    }
-
-    if (!entity) {
-      logger.warn(`⚠️ Failed to map ${userType} data for source_ac_id=${sourceAcId}`);
-      return false;
-    }
-
-    // Get the payload from the entity
-    const payload = entity.toZendeskPayload();
-    if (!payload) {
-      logger.warn(`⚠️ Failed to create payload for ${userType} source_ac_id=${sourceAcId}`);
-      return false;
-    }
-
-    // Extract status for logging
-    const rawStatus = fetchedData.status || null;
-    const formattedStatus = rawStatus ? formatStatusForStorage(rawStatus, userType) : null;
+    // Format status for storage
+    const formattedStatus = formatStatusForStorage(rawStatus, userType);
     const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
     
-    // Check if user is a company member (status will be stored but not sent to Zendesk)
-    const isCompanyMember = payload.organization_id === "40994316312731";
-    const statusNote = isCompanyMember ? " (company member - status tracked in DB, not sent to Zendesk)" : "";
-
-    // Save/update ALL user fields in database (not just status)
-    // This will update name, email, phone, status, and all other fields from fresh API data
-    // Note: Status is stored for ALL users (including company members) for tracking purposes
-    const saved = saveMappedDataToDatabase(payload);
+    // Update only the status field in database (optimized for non-active users)
+    updateUserStatusInDatabase(acId, formattedStatus, userType);
     
-    if (saved) {
-      if (currentStatus !== formattedStatus) {
-        logger.info(
-          `🔄 Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status changed ${currentStatus || "null"} → ${formattedStatus || "null"}${statusNote}`
-        );
-      } else {
-        logger.debug(
-          `✅ Updated ${userType} ${sourceAcId} (ac_id: ${acId}): all fields refreshed from API (status unchanged: ${formattedStatus || "null"})${statusNote}`
-        );
-      }
-      return true;
+    if (currentStatus !== formattedStatus) {
+      logger.info(
+        `🔄 Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status changed ${currentStatus || "null"} → ${formattedStatus || "null"}`
+      );
     } else {
-      logger.warn(`⚠️ Failed to save updated data for ${userType} ${sourceAcId} (ac_id: ${acId})`);
-      return false;
+      logger.debug(
+        `✅ Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status unchanged (${formattedStatus || "null"})`
+      );
     }
+    return true;
   } catch (error) {
     // Handle API errors (network, timeout, etc.)
     if (error.response?.status === 404) {
@@ -398,7 +367,7 @@ export async function fetchAndUpdateUserStatus(user) {
     }
 
     logger.error(
-      `❌ Failed to fetch and update ${userType} ${sourceAcId} (ac_id: ${acId}): ${error.message}`
+      `❌ Failed to fetch status for ${userType} ${sourceAcId} (ac_id: ${acId}): ${error.message}`
     );
     if (error.response) {
       logger.error(`   API Response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);

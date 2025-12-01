@@ -37,5 +37,43 @@ export async function fetchCaregiverDetail(id) {
   }
 }
 
+/**
+ * Fetches only the status field for a client user.
+ * This is optimized for non-active users where we only need status updates.
+ * @param {number} id - Client ID
+ * @returns {Promise<string|null>} Status value or null if not found/error
+ */
+export async function fetchClientStatusOnly(id) {
+  try {
+    const { data } = await requestWithRetry(() => alayaClient.get(`/patients/clients/${id}`));
+    return data?.status || null;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return null; // User not found
+    }
+    logger.warn(`Failed to fetch status for client ${id}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Fetches only the status field for a caregiver user.
+ * This is optimized for non-active users where we only need status updates.
+ * @param {number} id - Caregiver ID
+ * @returns {Promise<string|null>} Status value or null if not found/error
+ */
+export async function fetchCaregiverStatusOnly(id) {
+  try {
+    const res = await requestWithRetry(() => alayaClient.get(`/employees/employees/${id}`));
+    return res.data?.status || null;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return null; // User not found
+    }
+    logger.warn(`Failed to fetch status for caregiver ${id}: ${err.message}`);
+    return null;
+  }
+}
+
 logger.info("📡 AlayaCare API client initialized");
 
