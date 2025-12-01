@@ -219,7 +219,7 @@ export async function runSync() {
       });
     }
     
-    // Debug: Check for users that should have status but don't
+    // Debug: Check for users that should have status but don't (likely company members)
     const usersMissingStatus = zendeskUsers.filter((u) => {
       const userType = u.user_fields?.type;
       const hasStatusField = userType === "client" 
@@ -230,9 +230,9 @@ export async function runSync() {
       return userType && !hasStatusField;
     });
     if (usersMissingStatus.length > 0) {
-      logger.warn(`⚠️ ${usersMissingStatus.length} users missing status in payload (may be company members or null status)`);
+      logger.info(`ℹ️  ${usersMissingStatus.length} users synced without status field (likely company members - status tracked in DB but not sent to Zendesk)`);
       usersMissingStatus.slice(0, 5).forEach((u) => {
-        logger.debug(`   ${u.user_fields?.type}: ${u.name} - missing status`);
+        logger.debug(`   ${u.user_fields?.type}: ${u.name} - company member (status tracked in DB)`);
       });
     }
 

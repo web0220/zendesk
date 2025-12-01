@@ -77,13 +77,17 @@ export function extractMappedFields(mappedData = {}) {
   if (userType === "client") {
     extracted.coordinator_pod = userFields.coordinator_pod || null;
     extracted.case_rating = userFields.case_rating || null;
-    extracted.client_status = isCompanyMember ? null : userFields.client_status || null;
+    // Store actual status in database for tracking (even for company members)
+    // We'll filter it out when sending to Zendesk, but we need to track changes
+    extracted.client_status = userFields.client_status || null;
     extracted.clinical_rn_manager = toJsonString(userFields.clinical_rn_manager);
     extracted.sales_rep = toJsonString(userFields.sales_rep);
   }
 
   if (userType === "caregiver") {
-    extracted.caregiver_status = isCompanyMember ? null : userFields.caregiver_status || null;
+    // Store actual status in database for tracking (even for company members)
+    // We'll filter it out when sending to Zendesk, but we need to track changes
+    extracted.caregiver_status = userFields.caregiver_status || null;
     extracted.department = toJsonString(userFields.department);
   }
 

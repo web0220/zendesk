@@ -363,19 +363,24 @@ export async function fetchAndUpdateUserStatus(user) {
     const rawStatus = fetchedData.status || null;
     const formattedStatus = rawStatus ? formatStatusForStorage(rawStatus, userType) : null;
     const currentStatus = userType === "client" ? user.client_status : user.caregiver_status;
+    
+    // Check if user is a company member (status will be stored but not sent to Zendesk)
+    const isCompanyMember = payload.organization_id === "40994316312731";
+    const statusNote = isCompanyMember ? " (company member - status tracked in DB, not sent to Zendesk)" : "";
 
     // Save/update ALL user fields in database (not just status)
     // This will update name, email, phone, status, and all other fields from fresh API data
+    // Note: Status is stored for ALL users (including company members) for tracking purposes
     const saved = saveMappedDataToDatabase(payload);
     
     if (saved) {
       if (currentStatus !== formattedStatus) {
         logger.info(
-          `🔄 Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status changed ${currentStatus || "null"} → ${formattedStatus || "null"} (all fields updated from API)`
+          `🔄 Updated ${userType} ${sourceAcId} (ac_id: ${acId}): status changed ${currentStatus || "null"} → ${formattedStatus || "null"}${statusNote}`
         );
       } else {
         logger.debug(
-          `✅ Updated ${userType} ${sourceAcId} (ac_id: ${acId}): all fields refreshed from API (status unchanged: ${formattedStatus || "null"})`
+          `✅ Updated ${userType} ${sourceAcId} (ac_id: ${acId}): all fields refreshed from API (status unchanged: ${formattedStatus || "null"})${statusNote}`
         );
       }
       return true;
