@@ -1,5 +1,6 @@
 // deleteUsersByOrganization.js
 import axios from "axios";
+import { zendeskLimiter } from "../src/utils/limiter.js";
 
 const ZENDESK_SUBDOMAIN = "alvitacare";
 const ZENDESK_EMAIL = "paula.cheng@alvitacare.com";
@@ -29,7 +30,7 @@ async function fetchUsersByOrganization(organizationId) {
   let allUsers = [];
 
   while (url) {
-    const res = await zendesk.get(url);
+    const res = await zendeskLimiter.schedule(() => zendesk.get(url));
     allUsers = allUsers.concat(res.data.users);
     url = res.data.next_page ? res.data.next_page.replace(/.*\.zendesk\.com\/api\/v2/, "") : null;
   }
@@ -74,7 +75,7 @@ async function deleteUsersInBatches(userIds) {
 
     console.log(`Deleting batch of ${userIds.slice(i, i + batchSize).length} users...`);
 
-    const res = await zendesk.delete(`/users/destroy_many.json?ids=${batch}`);
+    const res = await zendeskLimiter.schedule(() => zendesk.delete(`/users/destroy_many.json?ids=${batch}`));
     const jobId = res.data.job_status.id;
 
     console.log(`➡️  Job started: ${jobId}`);
@@ -89,7 +90,7 @@ async function deleteUsersInBatches(userIds) {
 // -------------------------------
 async function waitForJob(jobId) {
   while (true) {
-    const res = await zendesk.get(`/job_statuses/${jobId}.json`);
+    const res = await zendeskLimiter.schedule(() => zendesk.get(`/job_statuses/${jobId}.json`));
     const { status, message, total, progress } = res.data.job_status;
 
     console.log(`Job ${jobId} → ${status} (${progress}/${total})`);
