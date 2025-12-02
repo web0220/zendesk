@@ -6,6 +6,7 @@ import {
   getZendeskClient,
   updateUserCustomFields,
 } from "./zendesk.api.js";
+import { zendeskLimiter } from "../../utils/limiter.js";
 
 function normalizeIdentities(identities = []) {
   return identities
@@ -79,7 +80,7 @@ export async function addIdentities(userId, identities = []) {
   for (const identity of formatted) {
     try {
       await callZendesk(() =>
-        getZendeskClient().post(`/users/${userId}/identities.json`, { identity })
+        zendeskLimiter.schedule(() => getZendeskClient().post(`/users/${userId}/identities.json`, { identity }))
       );
       // logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {
@@ -133,7 +134,7 @@ export async function syncUserIdentities(userId, userData) {
   for (const identity of identitiesToAdd) {
     try {
       await callZendesk(() =>
-        getZendeskClient().post(`/users/${userId}/identities.json`, { identity })
+        zendeskLimiter.schedule(() => getZendeskClient().post(`/users/${userId}/identities.json`, { identity }))
       );
       // logger.info(`   ➕ Added ${identity.type}: ${identity.value}`);
     } catch (err) {

@@ -2,6 +2,7 @@ import { logger } from "../../config/logger.js";
 import { callZendesk, getZendeskClient } from "./zendesk.api.js";
 import { addIdentities } from "./identitySync.js";
 import { pollJobStatus } from "./jobPoller.js";
+import { zendeskLimiter } from "../../utils/limiter.js";
 
 function buildZendeskUserObject(user = {}) {
   return {
@@ -19,7 +20,7 @@ export async function upsertSingleUser(user) {
     const { identities, ...userWithoutIdentities } = user || {};
     const payload = { user: buildZendeskUserObject(userWithoutIdentities) };
 
-    const res = await getZendeskClient().post("/users/create_or_update.json", payload);
+    const res = await zendeskLimiter.schedule(() => getZendeskClient().post("/users/create_or_update.json", payload));
     const userId = res.data?.user?.id;
 
     if (!userId) {
@@ -48,7 +49,7 @@ export async function bulkUpsertUsers(users = []) {
       }),
     };
 
-    const res = await getZendeskClient().post("/users/create_or_update_many.json", payload);
+    const res = await zendeskLimiter.schedule(() => getZendeskClient().post("/users/create_or_update_many.json", payload));
     logger.info(`🧩 Upsert request accepted: ${users.length} users`);
     const jobId = res.data?.job_status?.id;
 
