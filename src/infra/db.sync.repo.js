@@ -35,7 +35,10 @@ function initializePreparedStatements() {
       -- This ensures we capture any changes in AlayaCare (name, email, phone, etc.)
       external_id = excluded.external_id,
       name = excluded.name,
-      email = excluded.email,
+      -- email and identities: preserve aliased values for already-synced users
+      -- For new users, use fresh data (will be aliased by duplicate processing)
+      -- For synced users, preserve existing aliased values (duplicate processing will re-alias if needed)
+      email = CASE WHEN zendesk_user_id IS NOT NULL THEN email ELSE excluded.email END,
       phone = excluded.phone,
       organization_id = excluded.organization_id,
       user_type = excluded.user_type,
@@ -52,7 +55,8 @@ function initializePreparedStatements() {
       caregiver_status = excluded.caregiver_status,
       department = excluded.department,
       market = excluded.market,
-      identities = excluded.identities,
+      -- identities: preserve aliased values for already-synced users
+      identities = CASE WHEN zendesk_user_id IS NOT NULL THEN identities ELSE excluded.identities END,
       zendesk_primary = excluded.zendesk_primary,
       -- shared_phone_number should only be set for new users (duplicate handling)
       -- For existing users, preserve it (it's set by duplicate processing)

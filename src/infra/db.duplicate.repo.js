@@ -173,12 +173,13 @@ function processEmailDuplicates() {
   const db = getDb();
   logger.info("📧 Step 1: Processing duplicate emails...");
 
-  // Get all users
+  // Get all ACTIVE users (current_active = 1)
+  // Non-active users don't need processing because their data won't be overwritten (we only fetch active users)
   const allUsers = db
-    .prepare("SELECT * FROM user_mappings")
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
     .all()
     .map(hydrateMapping);
-  logger.info(`📊 Found ${allUsers.length} total users in database`);
+  logger.info(`📊 Found ${allUsers.length} active users in database (processing all, regardless of sync status)`);
 
   if (allUsers.length === 0) {
     logger.info("✅ No users found, skipping email duplicate processing");
@@ -213,87 +214,48 @@ function processEmailDuplicates() {
 
   // Process each email group
   for (const group of emailGroups) {
-    // Skip groups where all users are already synced
-    const pendingInGroup = group.filter((u) => u.zendesk_user_id == null);
-    if (pendingInGroup.length === 0) {
-      logger.debug(`⏭️  Skipping email group (all users already synced): ${group.map((u) => u.ac_id).join(", ")}`);
-      continue;
-    }
-
-    // Select primary user for this email group
-    const primaryUser = selectPrimaryUserForEmailGroup(group);
-    const duplicateUsers = group.filter((u) => u.ac_id !== primaryUser.ac_id);
-
     // Skip if already processed
-    if (processedUserIds.has(primaryUser.ac_id)) {
-      logger.debug(`⏭️  Skipping email group (already processed): primary=${primaryUser.ac_id}`);
+    if (group.some((u) => processedUserIds.has(u.ac_id))) {
+      logger.debug(`⏭️  Skipping email group (already processed): ${group.map((u) => u.ac_id).join(", ")}`);
       continue;
     }
 
     logger.info(
-      `   Processing email group: primary=${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id}), ${duplicateUsers.length} duplicate(s)`
+      `   Processing email group with ${group.length} user(s): ${group.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ")}`
     );
 
-    const primaryEmails = extractAllEmails(primaryUser);
-    const normalizedPrimaryEmails = new Set(primaryEmails.map((e) => e.toLowerCase()));
+    // Process ALL users in the group (including primary) - alias all emails to avoid conflicts
+    // This ensures all emails are unique and there's no confusion if primary user is deleted
+    for (const user of group) {
 
-    // Collect all emails from already-synced users in the group (these are already in Zendesk)
-    // We need to remove these from pending users to avoid Zendesk duplicate errors
-    const syncedUsersInGroup = group.filter((u) => u.zendesk_user_id != null);
-    const syncedEmails = new Set();
-    for (const syncedUser of syncedUsersInGroup) {
-      extractAllEmails(syncedUser).forEach((email) => syncedEmails.add(email.toLowerCase()));
-    }
-    // Combine primary emails and synced emails (primary is already synced if it has zendesk_user_id)
-    const allConflictingEmails = new Set([...normalizedPrimaryEmails, ...syncedEmails]);
-
-    // Process each duplicate user in the email group
-    for (const duplicateUser of duplicateUsers) {
-      // Skip if already synced
-      if (duplicateUser.zendesk_user_id != null) {
-        logger.debug(`⏭️  Skipping duplicate user ${duplicateUser.ac_id} (already synced)`);
-        continue;
-      }
-
-      let newEmail = duplicateUser.email;
-      const originalEmail = duplicateUser.email ? duplicateUser.email.toLowerCase() : null;
+      let newEmail = user.email;
+      const originalEmail = user.email ? user.email.toLowerCase() : null;
       let emailWasAliased = false;
 
-      // Check if this user's email field matches ANY other user's email (not just primary)
-      // This catches cases where users share emails but might not be in the same group
+      // Alias email if it matches ANY other user's email (including other users in the same group)
+      // This ensures ALL emails are unique, even for primary users
       if (newEmail) {
         const normalizedEmail = newEmail.toLowerCase();
         const usersWithThisEmail = globalEmailIndex.get(normalizedEmail) || [];
         const otherUsersWithEmail = usersWithThisEmail.filter(
-          (u) => u.ac_id !== duplicateUser.ac_id
+          (u) => u.ac_id !== user.ac_id
         );
         
-        // If another user has this email, alias it
+        // If another user has this email, ALWAYS alias it (even for primary user)
         if (otherUsersWithEmail.length > 0) {
           const emailParts = newEmail.split("@");
           if (emailParts.length === 2) {
-            newEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
+            newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
             emailWasAliased = true;
-            const hasSyncedUser = otherUsersWithEmail.some((u) => u.zendesk_user_id != null);
             logger.debug(
-              `   Creating alias email for duplicate user ${duplicateUser.ac_id}: ${duplicateUser.email} → ${newEmail} (found in ${otherUsersWithEmail.length} other user(s)${hasSyncedUser ? ", including synced" : ""})`
+              `   Aliasing email for user ${user.ac_id}: ${user.email} → ${newEmail} (found in ${otherUsersWithEmail.length} other user(s))`
             );
-          }
-        }
-        // Also check if it matches primary email (for backward compatibility)
-        else if (normalizedPrimaryEmails.has(normalizedEmail)) {
-          const emailParts = newEmail.split("@");
-          if (emailParts.length === 2) {
-            newEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
-            emailWasAliased = true;
-            logger.debug(`   Creating alias email for duplicate user ${duplicateUser.ac_id}: ${duplicateUser.email} → ${newEmail}`);
           }
         }
       }
 
-      // Filter identities: remove email identities that match primary user's emails OR any synced user's emails
-      // Also remove the original email from identities if we aliased it (to avoid duplication)
-      let identities = duplicateUser.identities;
+      // Process identities: alias all email identities that match other users' emails
+      let identities = user.identities;
       if (typeof identities === "string") {
         try {
           identities = JSON.parse(identities);
@@ -305,7 +267,7 @@ function processEmailDuplicates() {
         identities = [];
       }
 
-      // Process email identities: alias duplicates instead of removing them
+      // Process email identities: alias ALL email identities that match other users' emails
       const processedIdentities = identities.map((identity) => {
         // Keep phone identities (they'll be processed separately)
         if (identity.type === "phone" || identity.type === "phone_number") {
@@ -323,22 +285,20 @@ function processEmailDuplicates() {
           }
           
           // Check if this email already exists for another user
-          // If ANY other user has this email (synced or pending), we must alias it to avoid Zendesk duplicates
+          // If ANY other user has this email, we must alias it to avoid Zendesk duplicates
           const usersWithThisEmail = globalEmailIndex.get(identityEmail) || [];
           const otherUsersWithEmail = usersWithThisEmail.filter(
-            (u) => u.ac_id !== duplicateUser.ac_id
+            (u) => u.ac_id !== user.ac_id
           );
           
-          // If another user has this email, ALWAYS alias it (regardless of sync status or group)
-          // This prevents Zendesk duplicate errors when users sync in different batches
+          // If another user has this email, ALWAYS alias it (regardless of sync status)
           if (otherUsersWithEmail.length > 0) {
             // Alias this email identity
             const emailParts = identity.value.split("@");
             if (emailParts.length === 2) {
-              const aliasedEmail = `${emailParts[0]}+${duplicateUser.external_id}@${emailParts[1]}`;
-              const hasSyncedUser = otherUsersWithEmail.some((u) => u.zendesk_user_id != null);
+              const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
               logger.debug(
-                `   Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${duplicateUser.ac_id} (found in ${otherUsersWithEmail.length} other user(s)${hasSyncedUser ? ", including synced" : ""})`
+                `   Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id} (found in ${otherUsersWithEmail.length} other user(s))`
               );
               return { ...identity, value: aliasedEmail };
             }
@@ -348,26 +308,27 @@ function processEmailDuplicates() {
         return identity;
       }).filter((identity) => identity !== null); // Remove null entries
 
-      // Update duplicate user: only change email and identities, DON'T touch phone or shared_phone_number
-      const updateStmt = db.prepare(`
-        UPDATE user_mappings
-        SET email = ?,
-            identities = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE ac_id = ?
-      `);
+      // Update user: alias email and identities if needed
+      // Only update if something changed
+      if (emailWasAliased || JSON.stringify(processedIdentities) !== JSON.stringify(identities)) {
+        const updateStmt = db.prepare(`
+          UPDATE user_mappings
+          SET email = ?,
+              identities = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE ac_id = ?
+        `);
 
-      updateStmt.run(newEmail, JSON.stringify(processedIdentities), duplicateUser.ac_id);
-      const emailChanges = emailWasAliased ? `email aliased: ${duplicateUser.email} → ${newEmail}` : "";
-      const identityChanges = processedIdentities.length !== identities.length 
-        ? `, ${identities.length - processedIdentities.length} email identity(ies) aliased/removed`
-        : "";
-      logger.debug(`   Updated duplicate user ${duplicateUser.ac_id}: ${emailChanges}${identityChanges}`);
-      processedCount++;
-      processedUserIds.add(duplicateUser.ac_id);
+        updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+        const emailChanges = emailWasAliased ? `email aliased: ${user.email} → ${newEmail}` : "";
+        const identityChanges = processedIdentities.length !== identities.length 
+          ? `, ${identities.length - processedIdentities.length} email identity(ies) aliased/removed`
+          : "";
+        logger.debug(`   Updated user ${user.ac_id}: ${emailChanges}${identityChanges}`);
+        processedCount++;
+      }
+      processedUserIds.add(user.ac_id);
     }
-
-    processedUserIds.add(primaryUser.ac_id);
   }
 
   logger.info(`✅ Processed ${processedCount} duplicate users in ${emailGroups.length} email group(s)`);
@@ -378,7 +339,7 @@ function processEmailDuplicates() {
   const allPendingUsers = allUsers.filter((u) => u.zendesk_user_id == null);
   let secondPassCount = 0;
 
-  for (const user of allPendingUsers) {
+  for (const user of allActiveUsers) {
     // Skip if already processed in first pass
     if (processedUserIds.has(user.ac_id)) {
       continue;
@@ -479,11 +440,13 @@ function processPhoneDuplicates() {
   const db = getDb();
   logger.info("📞 Step 2: Processing duplicate phone numbers...");
 
-  // Get all users (refresh from database after email processing)
+  // Get all ACTIVE users (current_active = 1)
+  // Non-active users don't need processing because their data won't be overwritten (we only fetch active users)
   const allUsers = db
-    .prepare("SELECT * FROM user_mappings")
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
     .all()
     .map(hydrateMapping);
+  logger.info(`📊 Found ${allUsers.length} active users in database (processing all, regardless of sync status)`);
 
   if (allUsers.length === 0) {
     logger.info("✅ No users found, skipping phone duplicate processing");
@@ -517,12 +480,7 @@ function processPhoneDuplicates() {
 
   // Process each phone group
   for (const [phone, phoneGroup] of phoneGroups) {
-    // Skip if all users in group are already synced
-    const pendingInGroup = phoneGroup.filter((u) => u.zendesk_user_id == null);
-    if (pendingInGroup.length === 0) {
-      logger.debug(`⏭️  Skipping phone group (all users already synced): phone=${phone}`);
-      continue;
-    }
+    // Process all active users in the group (regardless of sync status)
 
     // Select primary user for this phone group (prefer zendesk_primary)
     const primaryTagged = phoneGroup.find((u) => u.zendesk_primary === 1 || u.zendesk_primary === true);
@@ -560,13 +518,8 @@ function processPhoneDuplicates() {
       `   Processing phone group: phone=${phone}, primary=${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id}), ${duplicateUsers.length} duplicate(s)`
     );
 
-    // Process each duplicate user in the phone group
+    // Process each duplicate user in the phone group (including primary)
     for (const duplicateUser of duplicateUsers) {
-      // Skip if already synced
-      if (duplicateUser.zendesk_user_id != null) {
-        logger.debug(`⏭️  Skipping duplicate user ${duplicateUser.ac_id} (already synced)`);
-        continue;
-      }
 
       // Get THIS USER'S phone numbers (not all phones from the group)
       const duplicateUserPhones = extractAllPhoneNumbers(duplicateUser);
