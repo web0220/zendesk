@@ -5,26 +5,31 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isProd = process.env.NODE_ENV === "production";
+const isDev = process.env.NODE_ENV === "development" || process.env.ENABLE_LOG_FILE === "true";
 
-// Create logs directory if it doesn't exist
-const logsDir = path.join(__dirname, "../../logs");
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
-
-// Create log file with timestamp
-const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-const logFileName = `sync_${timestamp}.log`;
-const logFilePath = path.join(logsDir, logFileName);
-
-// Create write stream for log file
+// Only create log files in dev mode
 let logStream = null;
+let logFilePath = null;
 
-try {
-  logStream = fs.createWriteStream(logFilePath, { flags: "a" });
-  console.log(`📝 Logging to file: ${logFilePath}`);
-} catch (err) {
-  console.error("Failed to create log file:", err);
+if (isDev) {
+  // Create logs directory if it doesn't exist
+  const logsDir = path.join(__dirname, "../../logs");
+  if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true });
+  }
+
+  // Create log file with timestamp
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const logFileName = `sync_${timestamp}.log`;
+  logFilePath = path.join(logsDir, logFileName);
+
+  // Create write stream for log file
+  try {
+    logStream = fs.createWriteStream(logFilePath, { flags: "a" });
+    console.log(`📝 Logging to file: ${logFilePath}`);
+  } catch (err) {
+    console.error("Failed to create log file:", err);
+  }
 }
 
 // Helper function to format log message

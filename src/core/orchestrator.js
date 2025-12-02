@@ -30,18 +30,18 @@ function isAlvitaCompanyMember(orgId) {
   }
 }
 
-function logFetchHealth(clients, caregivers) {
-  if (clients.length < 100) {
-    logger.warn(
-      `⚠️ WARNING: Only ${clients.length} clients fetched. Expected ~500. Check pagination!`
-    );
-  }
-  if (caregivers.length < 1000) {
-    logger.warn(
-      `⚠️ WARNING: Only ${caregivers.length} caregivers fetched. Expected ~2000. Check pagination!`
-    );
-  }
-}
+// function logFetchHealth(clients, caregivers) {
+//   if (clients.length < 100) {
+//     logger.warn(
+//       `⚠️ WARNING: Only ${clients.length} clients fetched. Expected ~500. Check pagination!`
+//     );
+//   }
+//   if (caregivers.length < 1000) {
+//     logger.warn(
+//       `⚠️ WARNING: Only ${caregivers.length} caregivers fetched. Expected ~2000. Check pagination!`
+//     );
+//   }
+// }
 
 function collectEntities(records, mapper, label) {
   const mapped = records.map(mapper).filter(Boolean);
@@ -73,11 +73,9 @@ function hydrateEntitiesFromDb(rows) {
 
 export async function runSync() {
   try {
-    // Step 1: Reset current_active flag for all users (prepare for new sync)
-    logger.info("🔄 Resetting current_active flag for all users...");
     resetCurrentActiveFlag();
 
-    logger.info("🔍 Starting fetch from AlayaCare API...");
+    // logger.info("🔍 Starting fetch from AlayaCare API...");
     const clients = await fetchClients({ status: "active" });
     const caregivers = await fetchCaregivers({ status: "active" });
 
