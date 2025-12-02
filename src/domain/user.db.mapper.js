@@ -79,7 +79,7 @@ export function extractMappedFields(mappedData = {}) {
     extracted.case_rating = userFields.case_rating || null;
     // Store actual status in database for tracking (even for company members)
     // We'll filter it out when sending to Zendesk, but we need to track changes
-    extracted.client_status = userFields.client_status || null;
+    extracted.client_status = userFields.userstatus || null;
     extracted.clinical_rn_manager = toJsonString(userFields.clinical_rn_manager);
     extracted.sales_rep = toJsonString(userFields.sales_rep);
   }
@@ -87,7 +87,7 @@ export function extractMappedFields(mappedData = {}) {
   if (userType === "caregiver") {
     // Store actual status in database for tracking (even for company members)
     // We'll filter it out when sending to Zendesk, but we need to track changes
-    extracted.caregiver_status = userFields.caregiver_status || null;
+    extracted.caregiver_status = userFields.userstatus || null;
     extracted.department = toJsonString(userFields.department);
   }
 
@@ -132,7 +132,7 @@ export function convertDatabaseRowToZendeskUser(row) {
     if (row.coordinator_pod) userFields.coordinator_pod = row.coordinator_pod;
     if (row.case_rating) userFields.case_rating = row.case_rating;
     if (row.client_status && !isCompanyMember) {
-      userFields.client_status = row.client_status;
+      userFields.userstatus = row.client_status;
     }
     if (row.clinical_rn_manager) userFields.clinical_rn_manager = row.clinical_rn_manager;
     if (row.sales_rep) userFields.sales_rep = row.sales_rep;
@@ -140,7 +140,7 @@ export function convertDatabaseRowToZendeskUser(row) {
 
   if (row.user_type === "caregiver") {
     if (row.caregiver_status && !isCompanyMember) {
-      userFields.caregiver_status = row.caregiver_status;
+      userFields.userstatus = row.caregiver_status;
     }
     if (row.department) userFields.department = row.department;
   }

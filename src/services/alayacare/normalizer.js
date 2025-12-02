@@ -162,7 +162,7 @@ function buildClientUserFields({
     coordinator_pod: coordinatorPodValue,
     clinical_rn_manager: clinicalRNManagerArray,
     case_rating: caseRatingValue,
-    client_status: clientStatusValue,
+    userstatus: clientStatusValue,
     sales_rep: salesRepArray,
     type: "client",
   };
@@ -171,7 +171,7 @@ function buildClientUserFields({
 function buildCaregiverUserFields({ marketArray, caregiverStatusValue, departmentNames }) {
   return {
     market: marketArray,
-    caregiver_status: caregiverStatusValue,
+    userstatus: caregiverStatusValue,
     department: departmentNames,
     type: "caregiver",
   };

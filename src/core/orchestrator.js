@@ -263,13 +263,13 @@ export async function runSync() {
     
     // Debug: Log status values being sent to Zendesk
     const usersWithStatus = zendeskUsers.filter((u) => {
-      const status = u.user_fields?.client_status || u.user_fields?.caregiver_status;
+      const status = u.user_fields?.userstatus;
       return status;
     });
     if (usersWithStatus.length > 0) {
       logger.debug(`📋 ${usersWithStatus.length} users have status to send to Zendesk`);
       usersWithStatus.slice(0, 5).forEach((u) => {
-        const status = u.user_fields?.client_status || u.user_fields?.caregiver_status;
+        const status = u.user_fields?.userstatus;
         const userType = u.user_fields?.type || "unknown";
         logger.debug(`   ${userType}: ${u.name} - status: ${status}`);
       });
@@ -278,11 +278,7 @@ export async function runSync() {
     // Debug: Check for users that should have status but don't (likely company members)
     const usersMissingStatus = zendeskUsers.filter((u) => {
       const userType = u.user_fields?.type;
-      const hasStatusField = userType === "client" 
-        ? u.user_fields?.client_status 
-        : userType === "caregiver" 
-        ? u.user_fields?.caregiver_status 
-        : false;
+      const hasStatusField = u.user_fields?.userstatus;
       return userType && !hasStatusField;
     });
     if (usersMissingStatus.length > 0) {
@@ -396,11 +392,7 @@ export async function runSync() {
         if (jobResult.status === "Created" || jobResult.status === "Updated") {
           const userName = matchedUserData.name || matchedUserData.external_id || "unknown";
           const isCompanyMember = isAlvitaCompanyMember(matchedUserData.organization_id);
-          const currentStatus = userType === "client" 
-            ? matchedUserData.user_fields?.client_status 
-            : userType === "caregiver" 
-            ? matchedUserData.user_fields?.caregiver_status 
-            : null;
+          const currentStatus = matchedUserData.user_fields?.userstatus || null;
           
           if (jobResult.status === "Created") {
             batchCreated++;
