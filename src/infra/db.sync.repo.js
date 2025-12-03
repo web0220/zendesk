@@ -55,8 +55,9 @@ function initializePreparedStatements() {
       caregiver_status = excluded.caregiver_status,
       department = excluded.department,
       market = excluded.market,
-      -- identities: preserve aliased values for already-synced users
-      identities = CASE WHEN zendesk_user_id IS NOT NULL THEN identities ELSE excluded.identities END,
+      -- identities: always update from fresh API data (like phone, name, etc.)
+      -- This ensures the database has the latest identities when reading to send to Zendesk
+      identities = excluded.identities,
       zendesk_primary = excluded.zendesk_primary,
       -- shared_phone_number should only be set for new users (duplicate handling)
       -- For existing users, preserve it (it's set by duplicate processing)

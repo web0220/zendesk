@@ -21,6 +21,16 @@ export function initDatabase() {
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
+  
+  // Checkpoint any leftover WAL files from previous runs (safe recovery)
+  try {
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    logger.info("✅ Checkpointed WAL file (merged any leftover changes)");
+  } catch (error) {
+    logger.warn(`⚠️ WAL checkpoint warning: ${error.message}`);
+    // Continue anyway - SQLite will handle recovery automatically
+  }
+  
   logger.info(`📂 Database initialized at ${DB_PATH}`);
 
   ensureSchema(db);
@@ -37,6 +47,14 @@ export function getDb() {
 
 export function closeDatabase() {
   if (db) {
+    try {
+      // Checkpoint WAL before closing to merge changes and clean up WAL file
+      db.pragma("wal_checkpoint(TRUNCATE)");
+      logger.info("✅ Checkpointed WAL before closing");
+    } catch (error) {
+      logger.warn(`⚠️ WAL checkpoint warning during close: ${error.message}`);
+      // Continue to close anyway
+    }
     db.close();
     db = null;
     logger.info("🔒 Database connection closed");
