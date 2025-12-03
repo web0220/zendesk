@@ -250,8 +250,10 @@ export function normalizeClientRecord(client) {
       .slice(1)
       .map((phone) => ({ type: "phone", value: phone }))
       .filter((identity) => identity.value);
-    // Include all emails (except primary) in identities, including @alvitacare.com emails
-    const emailIdentities = emails
+    // Include all emails (except primary) in identities, but exclude internal emails for clients
+    // Internal emails should not be in identities to avoid incorrect organization detection
+    const nonInternalEmails = removeInternalEmails(emails);
+    const emailIdentities = nonInternalEmails
       .filter((email) => email && email !== primaryEmail)
       .map((email) => ({ type: "email", value: email }))
       .filter((identity) => identity.value);
@@ -275,8 +277,9 @@ export function normalizeClientRecord(client) {
           .filter(Boolean)
       : null;
 
-    // Include all emails (including internal) for organization detection
-    const allEmailsForOrg = [primaryEmail, ...emails.filter(e => e !== primaryEmail)].filter(Boolean);
+    // For organization detection, exclude internal emails to avoid incorrect classification
+    // Internal emails (like invoice emails) should not determine organization membership
+    const allEmailsForOrg = [primaryEmail, ...nonInternalEmails.filter(e => e !== primaryEmail)].filter(Boolean);
     const organizationId = determineOrganizationId(allEmailsForOrg, "client");
     const externalId = client.id ? `client_${client.id}` : null;
 
