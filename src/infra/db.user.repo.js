@@ -90,26 +90,62 @@ export function getAllUserMappings() {
   return stmt.all().map(hydrateMapping);
 }
 
-export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at, userType) {
+export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at, userType, identities = null) {
   const db = getDb();
   const lookupKey = normalizeAcLookupKey(ac_id, userType);
-  const stmt = db.prepare(`
-    UPDATE user_mappings
-    SET zendesk_user_id = ?,
-        last_synced_at = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
-       OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
-  `);
+  
+  // Convert identities to JSON string if provided
+  let identitiesJson = null;
+  if (identities !== null && identities !== undefined) {
+    if (Array.isArray(identities) || typeof identities === "object") {
+      identitiesJson = JSON.stringify(identities);
+    } else if (typeof identities === "string") {
+      identitiesJson = identities;
+    }
+  }
+  
+  // Prepare statement with or without identities update
+  const sql = identitiesJson !== null
+    ? `
+      UPDATE user_mappings
+      SET zendesk_user_id = ?,
+          last_synced_at = ?,
+          identities = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE ac_id = ?
+         OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
+    `
+    : `
+      UPDATE user_mappings
+      SET zendesk_user_id = ?,
+          last_synced_at = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE ac_id = ?
+         OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
+    `;
 
-  const result = stmt.run(
-    zendesk_user_id,
-    last_synced_at,
-    lookupKey || "__ac_lookup__",
-    String(ac_id),
-    userType || null,
-    userType || null
-  );
+  const stmt = db.prepare(sql);
+
+  const params = identitiesJson !== null
+    ? [
+        zendesk_user_id,
+        last_synced_at,
+        identitiesJson,
+        lookupKey || "__ac_lookup__",
+        String(ac_id),
+        userType || null,
+        userType || null
+      ]
+    : [
+        zendesk_user_id,
+        last_synced_at,
+        lookupKey || "__ac_lookup__",
+        String(ac_id),
+        userType || null,
+        userType || null
+      ];
+
+  const result = stmt.run(...params);
   if (result.changes === 0) {
     logger.warn(
       `⚠️  Could not update zendesk_user_id for ac_id=${ac_id} (lookupKey=${lookupKey}). Record not found.`

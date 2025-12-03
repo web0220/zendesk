@@ -43,9 +43,7 @@ async function fetchUsersToDelete() {
 
   // Fetch users from each organization ID
   for (const orgId of ORGANIZATION_IDS_TO_DELETE) {
-    console.log(`🔍 Fetching users from organization ${orgId}...`);
     const users = await fetchUsersByOrganization(orgId);
-    console.log(`   Found ${users.length} users in organization ${orgId}`);
     allUsers = allUsers.concat(users);
   }
 
@@ -56,10 +54,8 @@ async function fetchUsersToDelete() {
 
   const keptCount = allUsers.length - usersToDelete.length;
   if (keptCount > 0) {
-    console.log(`✅ Keeping ${keptCount} users with organization_id ${ALVITA_MEMBER_ORG_ID} (alvita member)`);
   }
 
-  console.log(`📋 Total users to delete: ${usersToDelete.length}`);
   return usersToDelete.map((u) => u.id);
 }
 
@@ -73,12 +69,9 @@ async function deleteUsersInBatches(userIds) {
   for (let i = 0; i < userIds.length; i += batchSize) {
     const batch = userIds.slice(i, i + batchSize).join(",");
 
-    console.log(`Deleting batch of ${userIds.slice(i, i + batchSize).length} users...`);
-
     const res = await zendeskLimiter.schedule(() => zendesk.delete(`/users/destroy_many.json?ids=${batch}`));
     const jobId = res.data.job_status.id;
 
-    console.log(`➡️  Job started: ${jobId}`);
     jobIds.push(jobId);
   }
 
@@ -93,11 +86,8 @@ async function waitForJob(jobId) {
     const res = await zendeskLimiter.schedule(() => zendesk.get(`/job_statuses/${jobId}.json`));
     const { status, message, total, progress } = res.data.job_status;
 
-    console.log(`Job ${jobId} → ${status} (${progress}/${total})`);
-
     if (status === "completed") return true;
     if (status === "failed") {
-      console.error(`❌ Job ${jobId} failed:`, message);
       return false;
     }
 
@@ -110,7 +100,6 @@ async function waitForJob(jobId) {
 // -------------------------------
 async function main() {
   try {
-    console.log("🔍 Fetching users from specified organizations…");
     const userIds = await fetchUsersToDelete();
 
     if (userIds.length === 0) {
@@ -118,18 +107,14 @@ async function main() {
       return;
     }
 
-    console.log("🗑️ Starting batch deletion…");
     const jobIds = await deleteUsersInBatches(userIds);
 
-    console.log(`🕒 Waiting for ${jobIds.length} async jobs to complete…`);
     for (const jobId of jobIds) {
       await waitForJob(jobId);
     }
 
-    console.log("🎉 DONE! All users from specified organizations deleted (alvita members preserved).");
-
   } catch (err) {
-    console.error("Fatal error:", err.response?.data || err);
+    logger.error("Fatal error:", err.response?.data || err);
   }
 }
 

@@ -333,13 +333,13 @@ function processEmailDuplicates() {
 
   logger.info(`✅ Processed ${processedCount} duplicate users in ${emailGroups.length} email group(s)`);
 
-  // Second pass: Process ALL pending users (even those not in groups) to catch any remaining duplicates
+  // Second pass: Process ALL active users (even those not in groups) to catch any remaining duplicates
   // This ensures we catch edge cases where emails might be missed
-  logger.info("🔍 Second pass: Checking all pending users for duplicate emails...");
-  const allPendingUsers = allUsers.filter((u) => u.zendesk_user_id == null);
+  logger.info("🔍 Second pass: Checking all active users for duplicate emails...");
+  // allUsers is already filtered by current_active = 1, so use it directly
   let secondPassCount = 0;
 
-  for (const user of allActiveUsers) {
+  for (const user of allUsers) {
     // Skip if already processed in first pass
     if (processedUserIds.has(user.ac_id)) {
       continue;

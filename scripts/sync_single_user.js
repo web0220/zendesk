@@ -173,13 +173,14 @@ async function main() {
     // 6️⃣ Sync identities
     await syncUserIdentities(upsertResult.userId, zendeskUser);
 
-    // 7️⃣ Update database with zendesk_user_id
+    // 7️⃣ Update database with zendesk_user_id and identities
     const syncTimestamp = new Date().toISOString();
     updateZendeskUserId(
       String(user.ac_id),
       upsertResult.userId,
       syncTimestamp,
-      userType
+      userType,
+      zendeskUser.identities
     );
 
     logger.info(

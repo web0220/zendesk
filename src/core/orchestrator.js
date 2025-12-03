@@ -30,18 +30,18 @@ function isAlvitaCompanyMember(orgId) {
   }
 }
 
-// function logFetchHealth(clients, caregivers) {
-//   if (clients.length < 100) {
-//     logger.warn(
-//       `⚠️ WARNING: Only ${clients.length} clients fetched. Expected ~500. Check pagination!`
-//     );
-//   }
-//   if (caregivers.length < 1000) {
-//     logger.warn(
-//       `⚠️ WARNING: Only ${caregivers.length} caregivers fetched. Expected ~2000. Check pagination!`
-//     );
-//   }
-// }
+function logFetchHealth(clients, caregivers) {
+  if (clients.length < 100) {
+    logger.warn(
+      `⚠️ WARNING: Only ${clients.length} clients fetched. Expected ~500. Check pagination!`
+    );
+  }
+  if (caregivers.length < 1000) {
+    logger.warn(
+      `⚠️ WARNING: Only ${caregivers.length} caregivers fetched. Expected ~2000. Check pagination!`
+    );
+  }
+}
 
 function collectEntities(records, mapper, label) {
   const mapped = records.map(mapper).filter(Boolean);
@@ -434,15 +434,6 @@ export async function runSync() {
             }
           }
 
-          updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType);
-          totalMappingsUpdated++;
-
-          if (userType === "client") {
-            totalClientsProcessed++;
-          } else if (userType === "caregiver") {
-            totalCaregiversProcessed++;
-          }
-
           // Log user creation/update with details
           const action = jobResult.status === "Created" ? "➕ CREATED" : "🔄 UPDATED";
           logger.info(
@@ -464,6 +455,16 @@ export async function runSync() {
 
           await syncUserIdentities(jobResult.id, matchedUserData);
           totalIdentitiesSynced++;
+
+          // Update database with zendesk_user_id and identities after syncing
+          updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType, matchedUserData.identities);
+          totalMappingsUpdated++;
+
+          if (userType === "client") {
+            totalClientsProcessed++;
+          } else if (userType === "caregiver") {
+            totalCaregiversProcessed++;
+          }
         } else {
           batchFailed++;
           totalFailed++;
