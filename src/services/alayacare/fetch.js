@@ -188,7 +188,6 @@ export async function fetchClients({
     logger.info(`ℹ️  Total clients filtered out by status: ${totalFilteredOut}`);
   }
 
-  logger.info(`📊 Total clients fetched: ${allClients.length} across ${pagesFetched} pages`);
   return allClients;
 }
 
@@ -373,7 +372,6 @@ export async function fetchCaregivers({
     logger.info(`ℹ️  Total caregivers filtered out by status: ${totalFilteredOut}`);
   }
 
-  logger.info(`📊 Total caregivers fetched: ${allCaregivers.length} across ${pagesFetched} pages`);
   return allCaregivers;
 }
 

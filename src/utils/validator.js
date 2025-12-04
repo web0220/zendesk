@@ -140,6 +140,5 @@ export function sanitizeUsers(users = []) {
     }
   }
 
-  logger.info(`🧹 Sanitized ${valid.length}/${users.length} users`);
   return valid;
 }

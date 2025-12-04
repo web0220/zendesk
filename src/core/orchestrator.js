@@ -7,7 +7,6 @@ import { UserEntity } from "../domain/UserEntity.js";
 import { chunkArray, runWithLimit } from "../utils/rateLimiter.js";
 import {
   saveMappedUsersBatch,
-  hasUsersPendingSync,
   getUsersPendingSync,
   updateZendeskUserId,
   processDuplicateEmailsAndPhones,
@@ -47,10 +46,6 @@ function collectEntities(records, mapper, label) {
   const mapped = records.map(mapper).filter(Boolean);
   const valid = mapped.filter((entity) => entity.validate());
 
-  logger.info(
-    `📊 ${label}: ${mapped.length}/${records.length} mapped, ${valid.length}/${mapped.length} valid`
-  );
-
   if (mapped.length < records.length * 0.8) {
     logger.warn(
       `⚠️ WARNING: ${records.length - mapped.length} ${label.toLowerCase()} failed to map. Check mapper logic!`
@@ -75,7 +70,6 @@ export async function runSync() {
   try {
     resetCurrentActiveFlag();
 
-    // logger.info("🔍 Starting fetch from AlayaCare API...");
     const clients = await fetchClients({ status: "active" });
     const caregivers = await fetchCaregivers({ status: "active" });
 
@@ -107,14 +101,11 @@ export async function runSync() {
       );
     }
 
-    const shouldProcessDuplicates = savedCount > 0 || hasUsersPendingSync();
-    if (shouldProcessDuplicates) {
-      logger.info("🔧 Processing duplicate emails and phone numbers...");
-      processDuplicateEmailsAndPhones();
-      logger.info("✅ Finished processing duplicates");
-    } else {
-      logger.info("⏭️ Skipping duplicate processing (no pending users)");
-    }
+    // Process duplicates for all active users (current_active = 1)
+    // The function itself checks if there are active users and returns early if not
+    logger.info("🔧 Processing duplicate emails and phone numbers...");
+    processDuplicateEmailsAndPhones();
+    logger.info("✅ Finished processing duplicates");
 
     // Step 2: Detect and update status for users who changed from active to inactive
     logger.info("🔍 Checking for users with status changes...");
@@ -177,7 +168,6 @@ export async function runSync() {
       logger.info("✅ No users with status changes detected.");
     }
 
-    logger.info("📖 Reading ALL users from database for Zendesk sync...");
     // Send ALL users from database to Zendesk to ensure it's always in sync
     // This includes newly added users, updated users, and users with status changes
     const allUsersForSync = getAllUsersForSync();
@@ -223,15 +213,15 @@ export async function runSync() {
             companyMembers: 0,
           },
         },
-        updated: {
-          count: 0,
-          users: [],
-          byType: {
-            clients: 0,
-            caregivers: 0,
-            companyMembers: 0,
-          },
-        },
+        // updated: {
+        //   count: 0,
+        //   users: [],
+        //   byType: {
+        //     clients: 0,
+        //     caregivers: 0,
+        //     companyMembers: 0,
+        //   },
+        // },
         statusChanges: {
           count: statusChanges.length,
           changes: statusChanges,
@@ -322,7 +312,6 @@ export async function runSync() {
     let companyMembersUpdated = 0;
 
     const tasks = batches.map((batch, index) => async () => {
-      logger.info(`➡️ Processing batch ${index + 1}/${batches.length}`);
       const result = await bulkUpsertUsers(batch);
       const jobStatus = result?.job_status;
       const jobResults = jobStatus?.results || [];
@@ -377,7 +366,6 @@ export async function runSync() {
         }
 
         if (externalId && processedExternalIds.has(externalId)) {
-          logger.debug(`   ⏭️  Skipping duplicate result for external_id=${externalId}`);
           continue;
         }
         if (externalId) {
@@ -434,14 +422,6 @@ export async function runSync() {
             }
           }
 
-          // Log user creation/update with details
-          const action = jobResult.status === "Created" ? "➕ CREATED" : "🔄 UPDATED";
-          logger.info(
-            `${action} ${userType.toUpperCase()}: ${userName} (AC ID: ${acId}, Zendesk ID: ${jobResult.id})`
-          );
-          logger.info(
-            `   📧 Email: ${matchedUserData.email || "N/A"} | 📞 Phone: ${matchedUserData.phone || "N/A"} | 🏢 Org: ${matchedUserData.organization_id || "N/A"}`
-          );
           if (matchedUserData.identities && matchedUserData.identities.length > 0) {
             const identitySummary = matchedUserData.identities
               .map((id) => `${id.type}:${id.value}`)
@@ -450,7 +430,6 @@ export async function runSync() {
             const moreCount = matchedUserData.identities.length > 3 
               ? ` (+${matchedUserData.identities.length - 3} more)` 
               : "";
-            logger.info(`   🔗 Identities: ${identitySummary}${moreCount}`);
           }
 
           await syncUserIdentities(jobResult.id, matchedUserData);

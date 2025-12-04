@@ -202,7 +202,6 @@ function processEmailDuplicates() {
 
   // Find email groups (users connected by shared emails)
   const emailGroups = findEmailGroups(allUsers);
-  logger.info(`🔗 Found ${emailGroups.length} email group(s)`);
 
   if (emailGroups.length === 0) {
     logger.info("✅ No email duplicate groups found");
@@ -468,7 +467,6 @@ function processPhoneDuplicates() {
 
   // Find phone groups (users who share the same phone)
   const phoneGroups = Array.from(phoneIndex.entries()).filter(([phone, users]) => users.length > 1);
-  logger.info(`🔗 Found ${phoneGroups.length} phone group(s)`);
 
   if (phoneGroups.length === 0) {
     logger.info("✅ No phone duplicate groups found");

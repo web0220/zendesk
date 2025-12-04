@@ -50,7 +50,6 @@ export async function bulkUpsertUsers(users = []) {
     };
 
     const res = await zendeskLimiter.schedule(() => getZendeskClient().post("/users/create_or_update_many.json", payload));
-    logger.info(`🧩 Upsert request accepted: ${users.length} users`);
     const jobId = res.data?.job_status?.id;
 
     if (!jobId) {
@@ -59,7 +58,6 @@ export async function bulkUpsertUsers(users = []) {
     }
 
     const job = await pollJobStatus(jobId);
-    logger.info(`✅ Job ${jobId} finished with status: ${job.status}`);
 
     return {
       job_status: job,

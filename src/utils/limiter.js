@@ -24,8 +24,3 @@ export const zendeskLimiter = new Bottleneck({
   maxConcurrent,
   minTime,
 });
-
-// Log configuration on initialization
-logger.info(
-  `🚦 Zendesk rate limiter initialized: maxConcurrent=${maxConcurrent}, minTime=${minTime}ms (${1000 / minTime} req/sec)`
-);

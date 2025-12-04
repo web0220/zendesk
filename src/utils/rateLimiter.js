@@ -25,8 +25,6 @@ export async function runWithLimit(tasks, concurrency = 5) {
   const limit = pLimit(concurrency);
   const results = [];
 
-  logger.info(`🚦 Running ${tasks.length} tasks with concurrency ${concurrency}`);
-
   for (const task of tasks) {
     results.push(limit(() => task()));
   }

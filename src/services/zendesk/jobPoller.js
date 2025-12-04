@@ -9,7 +9,6 @@ import { getJobStatus } from "./zendesk.api.js";
  */
 export async function pollJobStatus(jobId, intervalMs = 3000, timeoutMs = 60000) {
   const start = Date.now();
-  logger.info(`⏳ Polling job ${jobId}...`);
 
   while (Date.now() - start < timeoutMs) {
     const statusData = await getJobStatus(jobId);
