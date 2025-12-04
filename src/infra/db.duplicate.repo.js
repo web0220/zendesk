@@ -166,29 +166,9 @@ function selectPrimaryUserForEmailGroup(group) {
 }
 
 /**
- * Extract original email from an aliased email (removes +external_id pattern)
- * @param {string} aliasedEmail - Email that may be aliased (e.g., "user+123@example.com")
- * @param {string} externalId - The external_id that was used for aliasing
- * @returns {string|null} - Original email or null if not aliased
- */
-function extractOriginalEmail(aliasedEmail, externalId) {
-  if (!aliasedEmail || !externalId) return null;
-  
-  // Check if email contains the aliasing pattern: localpart+external_id@domain
-  const pattern = new RegExp(`^(.+)\\+${externalId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@(.+)$`, 'i');
-  const match = aliasedEmail.match(pattern);
-  
-  if (match) {
-    return `${match[1]}@${match[2]}`;
-  }
-  
-  return null;
-}
-
-/**
  * Process email duplicates: group users by shared emails, alias duplicate emails.
  * This is the FIRST step and only handles emails, not phones.
- * After aliasing all duplicates, restores original emails for zendesk_primary users.
+ * After aliasing all duplicates, removes alias pattern from zendesk_primary users.
  */
 function processEmailDuplicates() {
   const db = getDb();
@@ -207,14 +187,6 @@ function processEmailDuplicates() {
     return;
   }
 
-  // Store original emails and identities before processing (for primary user restoration)
-  const originalEmailData = new Map();
-  for (const user of allUsers) {
-    originalEmailData.set(user.ac_id, {
-      originalEmail: user.email,
-      originalIdentities: user.identities
-    });
-  }
 
   // Build global email index: email -> [users who have this email]
   // This includes ALL users (synced and pending) to catch all duplicates
@@ -461,8 +433,8 @@ function processEmailDuplicates() {
   }
 
   // Step 3: Restore original emails for zendesk_primary users
-  // After aliasing all duplicates, restore primary users' original emails to ensure they keep their real emails
-  logger.info("🔑 Step 3: Restoring original emails for zendesk_primary users...");
+  // After aliasing all duplicates, remove the alias pattern (+tag) from primary users' emails
+  logger.info("🔑 Step 3: Removing alias pattern from zendesk_primary users...");
   const primaryUsers = db
     .prepare("SELECT * FROM user_mappings WHERE current_active = 1 AND zendesk_primary = 1")
     .all()
@@ -471,29 +443,24 @@ function processEmailDuplicates() {
   let restoredCount = 0;
   
   for (const primaryUser of primaryUsers) {
-    const originalData = originalEmailData.get(primaryUser.ac_id);
-    if (!originalData) {
-      continue; // Skip if we don't have original data
-    }
-
     let needsUpdate = false;
     let restoredEmail = primaryUser.email;
     let restoredIdentities = primaryUser.identities;
 
-    // Restore email field if it was aliased
-    if (primaryUser.email && originalData.originalEmail) {
-      const extractedOriginal = extractOriginalEmail(primaryUser.email, primaryUser.external_id);
-      if (extractedOriginal) {
-        // Email was aliased, restore to original
-        restoredEmail = originalData.originalEmail;
+    // Remove alias pattern from email field (remove everything after +)
+    if (primaryUser.email && primaryUser.email.includes('+') && primaryUser.email.includes('@')) {
+      const emailParts = primaryUser.email.split('@');
+      if (emailParts.length === 2) {
+        const localPart = emailParts[0].split('+')[0]; // Remove everything after +
+        restoredEmail = `${localPart}@${emailParts[1]}`;
         needsUpdate = true;
-        logger.debug(
-          `   Restoring email for primary user ${primaryUser.ac_id}: ${primaryUser.email} → ${restoredEmail}`
+        logger.info(
+          `   🔑 Removing alias from email for primary user ${primaryUser.ac_id}: ${primaryUser.email} → ${restoredEmail}`
         );
       }
     }
 
-    // Restore email identities if they were aliased
+    // Remove alias pattern from email identities (remove everything after +)
     if (primaryUser.identities) {
       let identities = primaryUser.identities;
       if (typeof identities === "string") {
@@ -507,40 +474,17 @@ function processEmailDuplicates() {
         identities = [];
       }
 
-      // Get original identities
-      let originalIdentities = originalData.originalIdentities;
-      if (typeof originalIdentities === "string") {
-        try {
-          originalIdentities = JSON.parse(originalIdentities);
-        } catch {
-          originalIdentities = [];
-        }
-      }
-      if (!Array.isArray(originalIdentities)) {
-        originalIdentities = [];
-      }
-
-      // Build a map of original email identities for quick lookup
-      const originalEmailIdentitiesMap = new Map();
-      originalIdentities.forEach((identity) => {
-        if (identity.type === "email" && identity.value) {
-          originalEmailIdentitiesMap.set(identity.value.toLowerCase(), identity.value);
-        }
-      });
-
-      // Restore aliased email identities to their original values
       restoredIdentities = identities.map((identity) => {
-        if (identity.type === "email" && identity.value) {
-          const extractedOriginal = extractOriginalEmail(identity.value, primaryUser.external_id);
-          if (extractedOriginal) {
-            // This identity was aliased, restore to original
-            const originalValue = originalEmailIdentitiesMap.get(extractedOriginal.toLowerCase());
-            if (originalValue) {
-              logger.debug(
-                `   Restoring email identity for primary user ${primaryUser.ac_id}: ${identity.value} → ${originalValue}`
-              );
-              return { ...identity, value: originalValue };
-            }
+        if (identity.type === "email" && identity.value && identity.value.includes('+') && identity.value.includes('@')) {
+          // Remove alias pattern: remove everything after +
+          const emailParts = identity.value.split('@');
+          if (emailParts.length === 2) {
+            const localPart = emailParts[0].split('+')[0]; // Remove everything after +
+            const restoredValue = `${localPart}@${emailParts[1]}`;
+            logger.debug(
+              `   Removing alias from email identity for primary user ${primaryUser.ac_id}: ${identity.value} → ${restoredValue}`
+            );
+            return { ...identity, value: restoredValue };
           }
         }
         return identity;
@@ -562,20 +506,22 @@ function processEmailDuplicates() {
         WHERE ac_id = ?
       `);
 
-      updateStmt.run(
-        restoredEmail,
-        typeof restoredIdentities === "string" ? restoredIdentities : JSON.stringify(restoredIdentities),
-        primaryUser.ac_id
-      );
-      restoredCount++;
-      logger.debug(`   ✅ Restored original emails for primary user ${primaryUser.ac_id}`);
+      const identitiesJson = typeof restoredIdentities === "string" ? restoredIdentities : JSON.stringify(restoredIdentities);
+      const result = updateStmt.run(restoredEmail, identitiesJson, primaryUser.ac_id);
+      
+      if (result.changes > 0) {
+        restoredCount++;
+        logger.info(`   ✅ Removed alias pattern from primary user ${primaryUser.ac_id}`);
+      } else {
+        logger.warn(`   ⚠️  Failed to update primary user ${primaryUser.ac_id} - no rows changed`);
+      }
     }
   }
 
   if (restoredCount > 0) {
-    logger.info(`✅ Restored original emails for ${restoredCount} zendesk_primary user(s)`);
+    logger.info(`✅ Removed alias pattern from ${restoredCount} zendesk_primary user(s)`);
   } else {
-    logger.info("✅ No primary users needed email restoration");
+    logger.info("✅ No primary users needed alias removal");
   }
 }
 
