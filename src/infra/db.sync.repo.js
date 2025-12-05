@@ -64,6 +64,9 @@ function initializePreparedStatements() {
       shared_phone_number = CASE WHEN zendesk_user_id IS NULL THEN excluded.shared_phone_number ELSE shared_phone_number END,
       -- Mark as active (found in current sync)
       current_active = 1,
+      -- Reset non_active_status_fetched flag when user becomes active again
+      -- This ensures we can detect if they become non-active again in the future
+      non_active_status_fetched = NULL,
       updated_at = CURRENT_TIMESTAMP
       -- Note: zendesk_user_id is NOT updated here - it's preserved for already-synced users
       -- Note: ac_id is NOT updated here - it's the primary key used to identify the row
@@ -209,8 +212,10 @@ export function resetCurrentActiveFlag() {
 /**
  * Finds users who were active in previous sync but are not in current active fetch.
  * These users may have changed status (active -> terminated/on hold/etc.)
+ * Only returns users who haven't had their status fetched yet (non_active_status_fetched IS NULL or 0).
+ * This optimization prevents re-fetching status for all non-active users on every sync.
  * 
- * @returns {Array} Array of user records with current_active = 0 and zendesk_user_id IS NOT NULL
+ * @returns {Array} Array of user records with current_active = 0, zendesk_user_id IS NOT NULL, and non_active_status_fetched IS NULL
  */
 export function getUsersWithStatusChange() {
   const db = getDb();
@@ -218,11 +223,12 @@ export function getUsersWithStatusChange() {
     SELECT * FROM user_mappings 
     WHERE current_active = 0 
       AND zendesk_user_id IS NOT NULL
+      AND (non_active_status_fetched IS NULL OR non_active_status_fetched = 0)
     ORDER BY updated_at DESC
   `);
   const users = stmt.all().map(hydrateMapping);
   logger.info(
-    `🔍 Found ${users.length} users with potential status change (current_active = 0, previously synced)`
+    `🔍 Found ${users.length} users with potential status change (current_active = 0, previously synced, status not yet fetched)`
   );
   return users;
 }
@@ -385,7 +391,7 @@ export async function fetchAndUpdateUserStatus(user) {
 }
 
 /**
- * Updates user status in database
+ * Updates user status in database and marks that status has been fetched for non-active users.
  * @param {string} acId - Primary key (ac_id)
  * @param {string|null} status - Formatted status value (e.g., 'cl_terminated')
  * @param {string} userType - 'client' or 'caregiver'
@@ -395,16 +401,24 @@ function updateUserStatusInDatabase(acId, status, userType) {
 
   if (userType === "client") {
     const stmt = db.prepare(
-      "UPDATE user_mappings SET client_status = ?, updated_at = CURRENT_TIMESTAMP WHERE ac_id = ?"
+      `UPDATE user_mappings 
+       SET client_status = ?, 
+           non_active_status_fetched = 1,
+           updated_at = CURRENT_TIMESTAMP 
+       WHERE ac_id = ?`
     );
     stmt.run(status, acId);
-    logger.debug(`   ✅ Updated client_status for ac_id=${acId}: ${status || "null"}`);
+    logger.debug(`   ✅ Updated client_status for ac_id=${acId}: ${status || "null"} (marked as fetched)`);
   } else if (userType === "caregiver") {
     const stmt = db.prepare(
-      "UPDATE user_mappings SET caregiver_status = ?, updated_at = CURRENT_TIMESTAMP WHERE ac_id = ?"
+      `UPDATE user_mappings 
+       SET caregiver_status = ?, 
+           non_active_status_fetched = 1,
+           updated_at = CURRENT_TIMESTAMP 
+       WHERE ac_id = ?`
     );
     stmt.run(status, acId);
-    logger.debug(`   ✅ Updated caregiver_status for ac_id=${acId}: ${status || "null"}`);
+    logger.debug(`   ✅ Updated caregiver_status for ac_id=${acId}: ${status || "null"} (marked as fetched)`);
   }
 }
 

@@ -19,6 +19,7 @@ const columnsToAdd = [
   { name: "shared_phone_number", def: "shared_phone_number TEXT" },
   { name: "source_ac_id", def: "source_ac_id TEXT" },
   { name: "current_active", def: "current_active INTEGER DEFAULT 0" },
+  { name: "non_active_status_fetched", def: "non_active_status_fetched INTEGER DEFAULT 0" },
 ];
 
 export function ensureSchema(db) {
@@ -66,7 +67,10 @@ export function ensureSchema(db) {
     "idx_external_id",
     "CREATE INDEX IF NOT EXISTS idx_external_id ON user_mappings(external_id)"
   );
-  ensureIndexExists(db, "idx_email", "CREATE INDEX IF NOT EXISTS idx_email ON user_mappings(email)");
+  ensureIndexExists(
+    db, 
+    "idx_email", 
+    "CREATE INDEX IF NOT EXISTS idx_email ON user_mappings(email)");
   ensureIndexExists(
     db,
     "idx_user_type",
@@ -77,8 +81,16 @@ export function ensureSchema(db) {
     "idx_organization_id",
     "CREATE INDEX IF NOT EXISTS idx_organization_id ON user_mappings(organization_id)"
   );
-  ensureIndexExists(db, "idx_name", "CREATE INDEX IF NOT EXISTS idx_name ON user_mappings(name)");
-  ensureIndexExists(db, "idx_phone", "CREATE INDEX IF NOT EXISTS idx_phone ON user_mappings(phone)");
+  ensureIndexExists(
+    db,
+    "idx_name",
+    "CREATE INDEX IF NOT EXISTS idx_name ON user_mappings(name)"
+  );
+  ensureIndexExists(
+    db,
+    "idx_phone",
+    "CREATE INDEX IF NOT EXISTS idx_phone ON user_mappings(phone)"
+  );
   ensureIndexExists(
     db,
     "idx_client_status",
@@ -93,6 +105,11 @@ export function ensureSchema(db) {
     db,
     "idx_current_active",
     "CREATE INDEX IF NOT EXISTS idx_current_active ON user_mappings(current_active)"
+  );
+  ensureIndexExists(
+    db,
+    "idx_non_active_status_fetched",
+    "CREATE INDEX IF NOT EXISTS idx_non_active_status_fetched ON user_mappings(non_active_status_fetched)"
   );
 
   logger.info("✅ Database tables initialized");
