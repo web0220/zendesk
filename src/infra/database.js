@@ -16,5 +16,9 @@ export {
   getAllUserMappings,
   updateZendeskUserId,
 } from "./db.user.repo.js";
-export { processDuplicateEmailsAndPhones } from "./db.duplicate.repo.js";
+export { 
+  processDuplicateEmailsAndPhones,
+  processNonActiveUserEmailSwaps,
+  findEmailGroupsWithoutPrimary,
+} from "./db.duplicate.repo.js";
 export { convertDatabaseRowToZendeskUser } from "../domain/user.db.mapper.js";

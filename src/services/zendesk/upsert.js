@@ -1,6 +1,6 @@
 import { logger } from "../../config/logger.js";
 import { callZendesk, getZendeskClient } from "./zendesk.api.js";
-import { addIdentities } from "./identitySync.js";
+import { addIdentities, syncUserIdentities } from "./identitySync.js";
 import { pollJobStatus } from "./jobPoller.js";
 import { zendeskLimiter } from "../../utils/limiter.js";
 
@@ -37,6 +37,43 @@ export async function upsertSingleUser(user) {
     await addIdentities(userId, identities);
 
     return { userId, user: res.data?.user };
+  });
+}
+
+/**
+ * Update an existing user in Zendesk using PUT method.
+ * This is used for updating users whose email/phone was changed (e.g., after non-active user processing).
+ * 
+ * @param {number} userId - Zendesk user ID
+ * @param {Object} userData - User data to update
+ * @returns {Promise<Object|null>} Updated user object or null if failed
+ */
+export async function updateUser(userId, userData) {
+  return callZendesk(async () => {
+    const { identities, ...userWithoutIdentities } = userData || {};
+    const payload = { user: buildZendeskUserObject(userWithoutIdentities) };
+    
+    const res = await zendeskLimiter.schedule(() => 
+      getZendeskClient().put(`/users/${userId}.json`, payload)
+    );
+    
+    const updatedUser = res.data?.user;
+    
+    if (!updatedUser) {
+      logger.warn(`⚠️ No user returned from PUT update for userId=${userId}`);
+      return null;
+    }
+    
+    logger.info(
+      `✅ Updated user ${userId} via PUT: ${updatedUser.name || updatedUser.email}`
+    );
+    
+    // Update identities separately if provided
+    if (identities && Array.isArray(identities) && identities.length > 0) {
+      await syncUserIdentities(userId, { identities });
+    }
+    
+    return { userId, user: updatedUser };
   });
 }
 

@@ -675,6 +675,471 @@ function processPhoneDuplicates() {
 }
 
 /**
+ * Extract unaliased email from aliased email format (e.g., "user+tag@domain.com" -> "user@domain.com")
+ */
+function extractUnaliasedEmail(aliasedEmail) {
+  if (!aliasedEmail || !aliasedEmail.includes('+') || !aliasedEmail.includes('@')) {
+    return aliasedEmail; // Not aliased
+  }
+  const [localPart, domain] = aliasedEmail.split('@');
+  const originalLocal = localPart.split('+')[0];
+  return `${originalLocal}@${domain}`;
+}
+
+/**
+ * Check if an email is aliased (contains + before @)
+ */
+function isEmailAliased(email) {
+  if (!email) return false;
+  return email.includes('+') && email.includes('@');
+}
+
+/**
+ * Find all active users who share the same email (checking both email field and identities)
+ * This checks if any active user has the target email (either directly or as an aliased email)
+ */
+function findUsersSharingEmail(targetEmail, excludeAcId) {
+  const db = getDb();
+  const normalizedTargetEmail = targetEmail.toLowerCase();
+  
+  // Get all active users
+  const allActiveUsers = db
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
+    .all()
+    .map(hydrateMapping);
+  
+  return allActiveUsers.filter(user => {
+    if (user.ac_id === excludeAcId) return false;
+    
+    // Get all emails for this user (from email field and identities)
+    const userEmails = extractAllEmails(user);
+    
+    // Check if any of the user's emails match the target (either directly or unaliased)
+    return userEmails.some(userEmail => {
+      const emailLower = userEmail.toLowerCase();
+      
+      // Direct match
+      if (emailLower === normalizedTargetEmail) {
+        return true;
+      }
+      
+      // Check if this user's email is aliased and matches when unaliased
+      if (isEmailAliased(emailLower)) {
+        const unaliased = extractUnaliasedEmail(emailLower).toLowerCase();
+        if (unaliased === normalizedTargetEmail) {
+          return true;
+        }
+      }
+      
+      // Check if target email is aliased and matches when unaliased
+      // (This handles the case where target is aliased but user has original)
+      if (isEmailAliased(normalizedTargetEmail)) {
+        const unaliasedTarget = extractUnaliasedEmail(normalizedTargetEmail).toLowerCase();
+        if (emailLower === unaliasedTarget) {
+          return true;
+        }
+      }
+      
+      return false;
+    });
+  });
+}
+
+/**
+ * Alias a user's email (both email field and email identities)
+ */
+function aliasUserEmail(user) {
+  const db = getDb();
+  let newEmail = user.email;
+  let emailWasAliased = false;
+  
+  if (newEmail && !isEmailAliased(newEmail)) {
+    const emailParts = newEmail.split("@");
+    if (emailParts.length === 2) {
+      newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+      emailWasAliased = true;
+    }
+  }
+  
+  // Process identities
+  let identities = user.identities;
+  if (typeof identities === "string") {
+    try {
+      identities = JSON.parse(identities);
+    } catch {
+      identities = [];
+    }
+  }
+  if (!Array.isArray(identities)) {
+    identities = [];
+  }
+  
+  const processedIdentities = identities.map((identity) => {
+    if (identity.type === "email" && identity.value && !isEmailAliased(identity.value)) {
+      const emailParts = identity.value.split("@");
+      if (emailParts.length === 2) {
+        return { ...identity, value: `${emailParts[0]}+${user.external_id}@${emailParts[1]}` };
+      }
+    }
+    return identity;
+  });
+  
+  // Update database
+  const updateStmt = db.prepare(`
+    UPDATE user_mappings
+    SET email = ?,
+        identities = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id = ?
+  `);
+  
+  updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+  
+  return { newEmail, processedIdentities, emailWasAliased };
+}
+
+/**
+ * Un-alias a user's email (both email field and email identities)
+ */
+function unaliasUserEmail(user) {
+  const db = getDb();
+  let newEmail = user.email;
+  let emailWasUnaliased = false;
+  
+  if (newEmail && isEmailAliased(newEmail)) {
+    newEmail = extractUnaliasedEmail(newEmail);
+    emailWasUnaliased = true;
+  }
+  
+  // Process identities
+  let identities = user.identities;
+  if (typeof identities === "string") {
+    try {
+      identities = JSON.parse(identities);
+    } catch {
+      identities = [];
+    }
+  }
+  if (!Array.isArray(identities)) {
+    identities = [];
+  }
+  
+  const processedIdentities = identities.map((identity) => {
+    if (identity.type === "email" && identity.value && isEmailAliased(identity.value)) {
+      return { ...identity, value: extractUnaliasedEmail(identity.value) };
+    }
+    return identity;
+  });
+  
+  // Update database
+  const updateStmt = db.prepare(`
+    UPDATE user_mappings
+    SET email = ?,
+        identities = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id = ?
+  `);
+  
+  updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+  
+  return { newEmail, processedIdentities, emailWasUnaliased };
+}
+
+/**
+ * Move user's phone numbers to shared_phone_number field
+ */
+function movePhoneToShared(user) {
+  const db = getDb();
+  const userPhones = extractAllPhoneNumbers(user);
+  const sharedPhoneNumberStr = userPhones.length > 0 ? userPhones.join("\n") : null;
+  
+  // Filter identities: remove phone identities
+  let identities = user.identities;
+  if (typeof identities === "string") {
+    try {
+      identities = JSON.parse(identities);
+    } catch {
+      identities = [];
+    }
+  }
+  if (!Array.isArray(identities)) {
+    identities = [];
+  }
+  
+  const filteredIdentities = identities.filter((identity) => {
+    return !(identity.type === "phone" || identity.type === "phone_number");
+  });
+  
+  // Update database
+  const updateStmt = db.prepare(`
+    UPDATE user_mappings
+    SET phone = NULL,
+        identities = ?,
+        shared_phone_number = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id = ?
+  `);
+  
+  updateStmt.run(JSON.stringify(filteredIdentities), sharedPhoneNumberStr, user.ac_id);
+  
+  return { sharedPhoneNumberStr, filteredIdentities };
+}
+
+/**
+ * Move phone numbers from shared_phone_number back to phone field and identities
+ */
+function movePhoneFromShared(user) {
+  const db = getDb();
+  
+  if (!user.shared_phone_number) {
+    return; // No phone to move
+  }
+  
+  const phones = user.shared_phone_number.split("\n").filter(p => p.trim());
+  const primaryPhone = phones[0] || null;
+  
+  // Add remaining phones to identities
+  let identities = user.identities;
+  if (typeof identities === "string") {
+    try {
+      identities = JSON.parse(identities);
+    } catch {
+      identities = [];
+    }
+  }
+  if (!Array.isArray(identities)) {
+    identities = [];
+  }
+  
+  // Add phones (except first one) as phone identities
+  const phoneIdentities = phones.slice(1).map(phone => ({
+    type: "phone_number",
+    value: phone.trim()
+  }));
+  
+  const updatedIdentities = [...identities, ...phoneIdentities];
+  
+  // Update database
+  const updateStmt = db.prepare(`
+    UPDATE user_mappings
+    SET phone = ?,
+        identities = ?,
+        shared_phone_number = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id = ?
+  `);
+  
+  updateStmt.run(primaryPhone, JSON.stringify(updatedIdentities), user.ac_id);
+  
+  return { primaryPhone, updatedIdentities };
+}
+
+/**
+ * Save original user data before duplicate processing (for reference)
+ */
+export function saveOriginalUserData() {
+  const db = getDb();
+  const allActiveUsers = db
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
+    .all()
+    .map(hydrateMapping);
+  
+  const originalData = new Map();
+  for (const user of allActiveUsers) {
+    originalData.set(user.ac_id, {
+      email: user.email,
+      phone: user.phone,
+      identities: user.identities,
+      shared_phone_number: user.shared_phone_number,
+    });
+  }
+  
+  logger.debug(`💾 Saved original data for ${originalData.size} active users`);
+  return originalData;
+}
+
+/**
+ * Find email groups with 2+ users and no zendesk_primary tag
+ * These users should not be sent to Zendesk and need notification
+ */
+export function findEmailGroupsWithoutPrimary() {
+  const db = getDb();
+  
+  // Get ALL users (active + non-active) to check for conflicts
+  const allUsers = db
+    .prepare("SELECT * FROM user_mappings")
+    .all()
+    .map(hydrateMapping);
+  
+  // Build email index: email -> [users who have this email]
+  const emailIndex = new Map();
+  
+  for (const user of allUsers) {
+    const userEmails = extractAllEmails(user);
+    for (const email of userEmails) {
+      const normalizedEmail = email.toLowerCase();
+      // Extract unaliased email for grouping
+      const unaliasedEmail = isEmailAliased(normalizedEmail) 
+        ? extractUnaliasedEmail(normalizedEmail).toLowerCase()
+        : normalizedEmail;
+      
+      if (!emailIndex.has(unaliasedEmail)) {
+        emailIndex.set(unaliasedEmail, []);
+      }
+      emailIndex.get(unaliasedEmail).push(user);
+    }
+  }
+  
+  // Find groups with 2+ users and no zendesk_primary
+  const problematicGroups = [];
+  
+  for (const [email, users] of emailIndex.entries()) {
+    // Only consider groups with 2+ users
+    if (users.length < 2) continue;
+    
+    // Check if any user has zendesk_primary tag
+    const hasPrimary = users.some(
+      (u) => u.zendesk_primary === 1 || u.zendesk_primary === true
+    );
+    
+    // If no primary tag, this is a problematic group
+    if (!hasPrimary) {
+      problematicGroups.push({
+        email: email,
+        users: users.map(u => ({
+          ac_id: u.ac_id,
+          name: u.name || u.external_id || "unknown",
+          email: u.email,
+          external_id: u.external_id,
+          user_type: u.user_type,
+          zendesk_user_id: u.zendesk_user_id,
+        })),
+      });
+    }
+  }
+  
+  return problematicGroups;
+}
+
+/**
+ * Process non-active users: swap emails/phones with active users who share the same email
+ */
+export function processNonActiveUserEmailSwaps(usersWithStatusChange) {
+  const db = getDb();
+  const usersToUpdate = [];
+  
+  logger.info("🔄 Processing email/phone swaps for non-active users...");
+  
+  for (const nonActiveUser of usersWithStatusChange) {
+    // Skip if user doesn't have zendesk_user_id (not synced yet)
+    if (!nonActiveUser.zendesk_user_id) {
+      continue;
+    }
+    
+    // Skip if email is already aliased
+    if (isEmailAliased(nonActiveUser.email)) {
+      logger.debug(`⏭️  Skipping non-active user ${nonActiveUser.ac_id}: email already aliased`);
+      continue;
+    }
+    
+    // Find active users who share the same email
+    const activeUsersSharingEmail = findUsersSharingEmail(
+      nonActiveUser.email,
+      nonActiveUser.ac_id
+    );
+    
+    if (activeUsersSharingEmail.length === 0) {
+      continue; // No conflict, skip
+    }
+    
+    logger.info(
+      `🔄 Processing non-active user ${nonActiveUser.ac_id} (${nonActiveUser.name || nonActiveUser.external_id}): ` +
+      `found ${activeUsersSharingEmail.length} active user(s) sharing email ${nonActiveUser.email}`
+    );
+    
+    // Alias non-active user's email and move phone to shared_phone_number
+    aliasUserEmail(nonActiveUser);
+    movePhoneToShared(nonActiveUser);
+    
+    // Reload non-active user from database to get updated values
+    const updatedNonActiveUser = db
+      .prepare("SELECT * FROM user_mappings WHERE ac_id = ?")
+      .get(nonActiveUser.ac_id);
+    const hydratedNonActiveUser = hydrateMapping(updatedNonActiveUser);
+    usersToUpdate.push(hydratedNonActiveUser);
+    
+    logger.info(
+      `   ✅ Aliased non-active user ${nonActiveUser.ac_id}: email → ${hydratedNonActiveUser.email}, phone moved to shared_phone_number`
+    );
+    
+    // Handle active user(s)
+    if (activeUsersSharingEmail.length === 1) {
+      // Single active user: un-alias email and move phone back
+      const activeUser = activeUsersSharingEmail[0];
+      unaliasUserEmail(activeUser);
+      movePhoneFromShared(activeUser);
+      
+      // Reload active user from database
+      const updatedActiveUser = db
+        .prepare("SELECT * FROM user_mappings WHERE ac_id = ?")
+        .get(activeUser.ac_id);
+      const hydratedActiveUser = hydrateMapping(updatedActiveUser);
+      usersToUpdate.push(hydratedActiveUser);
+      
+      logger.info(
+        `   ✅ Un-aliased active user ${activeUser.ac_id}: email → ${hydratedActiveUser.email}, phone restored`
+      );
+    } else {
+      // Multiple active users: select one as primary, un-alias that one
+      const primaryTagged = activeUsersSharingEmail.find(
+        (u) => u.zendesk_primary === 1 || u.zendesk_primary === true
+      );
+      let primaryUser;
+      
+      if (primaryTagged) {
+        primaryUser = primaryTagged;
+      } else {
+        // Prefer already synced users
+        const synced = activeUsersSharingEmail.filter((u) => u.zendesk_user_id != null);
+        if (synced.length > 0) {
+          primaryUser = synced[0];
+        } else {
+          primaryUser = activeUsersSharingEmail[0];
+        }
+        logger.warn(
+          `   ⚠️  No zendesk_primary user found in group. Selected ${primaryUser.ac_id} as primary.`
+        );
+      }
+      
+      // Un-alias primary user and move phone back
+      unaliasUserEmail(primaryUser);
+      movePhoneFromShared(primaryUser);
+      
+      // Reload primary user from database
+      const updatedPrimaryUser = db
+        .prepare("SELECT * FROM user_mappings WHERE ac_id = ?")
+        .get(primaryUser.ac_id);
+      const hydratedPrimaryUser = hydrateMapping(updatedPrimaryUser);
+      usersToUpdate.push(hydratedPrimaryUser);
+      
+      logger.info(
+        `   ✅ Un-aliased primary active user ${primaryUser.ac_id}: email → ${hydratedPrimaryUser.email}, phone restored`
+      );
+      
+      // Note: Other active users remain aliased (will be handled in next duplicate processing cycle)
+    }
+  }
+  
+  if (usersToUpdate.length > 0) {
+    logger.info(`📋 Found ${usersToUpdate.length} user(s) that need Zendesk updates`);
+  } else {
+    logger.info("✅ No email/phone swaps needed for non-active users");
+  }
+  
+  return usersToUpdate;
+}
+
+/**
  * Main function: Process email duplicates first, then phone duplicates separately.
  */
 export function processDuplicateEmailsAndPhones() {

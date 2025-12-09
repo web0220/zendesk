@@ -1,7 +1,7 @@
 import { logger } from "../config/logger.js";
 import { fetchClients, fetchCaregivers } from "../services/alayacare/fetch.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
-import { bulkUpsertUsers } from "../services/zendesk/upsert.js";
+import { bulkUpsertUsers, updateUser } from "../services/zendesk/upsert.js";
 import { syncUserIdentities } from "../services/zendesk/identitySync.js";
 import { UserEntity } from "../domain/UserEntity.js";
 import { chunkArray, runWithLimit } from "../utils/rateLimiter.js";
@@ -14,7 +14,10 @@ import {
   getUsersWithStatusChange,
   fetchAndUpdateUserStatus,
   getAllUsersForSync,
+  processNonActiveUserEmailSwaps,
+  findEmailGroupsWithoutPrimary,
 } from "../infra/database.js";
+import { sendEmailNotificationForDuplicateUsers } from "../services/notification/email.js";
 
 const BATCH_LIMIT = 100;
 const BATCH_CONCURRENCY = Number(process.env.ZENDESK_BATCH_CONCURRENCY) || 5;
@@ -164,6 +167,56 @@ export async function runSync() {
           `⚠️ ${failedUpdates} users failed to update status. They will be retried in next sync.`
         );
       }
+      
+      // Step 3: Process email/phone swaps for non-active users
+      // This handles the edge case where a primary user becomes non-active
+      // and an active user needs to get the original email back
+      const usersToUpdate = processNonActiveUserEmailSwaps(usersWithStatusChange);
+      
+      // Update users to Zendesk using PUT method (for email/phone changes)
+      if (usersToUpdate.length > 0) {
+        logger.info(`🔄 Updating ${usersToUpdate.length} user(s) to Zendesk via PUT (email/phone changes)...`);
+        
+        const updateTasks = usersToUpdate.map((user) => async () => {
+          if (!user.zendesk_user_id) {
+            logger.warn(`⚠️  Skipping user ${user.ac_id}: no zendesk_user_id`);
+            return { success: false, userId: null };
+          }
+          
+          try {
+            // Convert database row to Zendesk payload format
+            const zendeskPayload = UserEntity.fromDbRow(user)?.toZendeskPayload();
+            if (!zendeskPayload) {
+              logger.warn(`⚠️  Failed to convert user ${user.ac_id} to Zendesk payload`);
+              return { success: false, userId: user.zendesk_user_id };
+            }
+            
+            const result = await updateUser(user.zendesk_user_id, zendeskPayload);
+            return { success: !!result, userId: user.zendesk_user_id };
+          } catch (error) {
+            logger.error(
+              `❌ Failed to update user ${user.ac_id} (Zendesk ID: ${user.zendesk_user_id}): ${error.message}`
+            );
+            return { success: false, userId: user.zendesk_user_id };
+          }
+        });
+        
+        const UPDATE_CONCURRENCY = Number(process.env.ZENDESK_UPDATE_CONCURRENCY) || 5;
+        const updateResults = await runWithLimit(updateTasks, UPDATE_CONCURRENCY);
+        
+        const successfulUpdates = updateResults.filter((r) => r && r.success).length;
+        const failedZendeskUpdates = updateResults.length - successfulUpdates;
+        
+        logger.info(
+          `✅ Zendesk PUT updates complete: ${successfulUpdates} successful, ${failedZendeskUpdates} failed`
+        );
+        
+        if (failedZendeskUpdates > 0) {
+          logger.warn(
+            `⚠️ ${failedZendeskUpdates} users failed to update in Zendesk. They will be retried in next sync.`
+          );
+        }
+      }
     } else {
       logger.info("✅ No users with status changes detected.");
     }
@@ -172,18 +225,55 @@ export async function runSync() {
     // This includes newly added users, updated users, and users with status changes
     const allUsersForSync = getAllUsersForSync();
     
+    // Check for email groups with 2+ users and no zendesk_primary tag
+    // These users should NOT be sent to Zendesk
+    logger.info("🔍 Checking for email groups without zendesk_primary tag...");
+    const problematicGroups = findEmailGroupsWithoutPrimary();
+    
+    let usersToExclude = new Set();
+    if (problematicGroups.length > 0) {
+      logger.warn(
+        `⚠️  Found ${problematicGroups.length} email group(s) with 2+ users and no zendesk_primary tag`
+      );
+      
+      // Collect all user IDs to exclude
+      for (const group of problematicGroups) {
+        for (const user of group.users) {
+          usersToExclude.add(user.ac_id);
+          logger.warn(
+            `   ❌ Excluding user ${user.ac_id} (${user.name}): email "${group.email}" - no zendesk_primary tag in group`
+          );
+        }
+      }
+      
+      // Send email notification to Paula
+      await sendEmailNotificationForDuplicateUsers(problematicGroups);
+    } else {
+      logger.info("✅ No problematic email groups found (all groups have zendesk_primary tag or < 2 users)");
+    }
+    
+    // Filter out users in problematic groups
+    const usersToSync = allUsersForSync.filter((u) => !usersToExclude.has(u.ac_id));
+    const excludedCount = allUsersForSync.length - usersToSync.length;
+    
+    if (excludedCount > 0) {
+      logger.warn(
+        `⚠️  Excluding ${excludedCount} user(s) from Zendesk sync due to missing zendesk_primary tag in email groups`
+      );
+    }
+    
     logger.info(
-      `📋 Sending ${allUsersForSync.length} total users to Zendesk (includes new users, updated users, and users with status changes)`
+      `📋 Sending ${usersToSync.length} total users to Zendesk (includes new users, updated users, and users with status changes)`
     );
     
     // Log breakdown of users being sent
-    const newUsers = allUsersForSync.filter((u) => !u.zendesk_user_id).length;
-    const alreadySyncedUsers = allUsersForSync.filter((u) => u.zendesk_user_id).length;
+    const newUsers = usersToSync.filter((u) => !u.zendesk_user_id).length;
+    const alreadySyncedUsers = usersToSync.filter((u) => u.zendesk_user_id).length;
     logger.info(
       `   📊 Breakdown: ${newUsers} new users, ${alreadySyncedUsers} already synced users (will be updated in Zendesk)`
     );
     
-    if (allUsersForSync.length === 0) {
+    if (usersToSync.length === 0) {
       logger.info("✅ No users pending sync. All users are already synced.");
       if (usersWithStatusChange.length > 0) {
         logger.info(`   ℹ️  Processed ${usersWithStatusChange.length} status updates (users already synced, status updated in DB)`);
@@ -246,7 +336,7 @@ export async function runSync() {
       };
     }
 
-    const zendeskUsers = hydrateEntitiesFromDb(allUsersForSync);
+    const zendeskUsers = hydrateEntitiesFromDb(usersToSync);
     logger.info(`📦 Converted ${zendeskUsers.length} database records into Zendesk payloads`);
     
     // Debug: Log status values being sent to Zendesk
