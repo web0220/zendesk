@@ -90,60 +90,39 @@ export function getAllUserMappings() {
   return stmt.all().map(hydrateMapping);
 }
 
-export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at, userType, identities = null) {
+/**
+ * Updates zendesk_user_id and last_synced_at in the database after syncing to Zendesk.
+ * 
+ * Note: zendesk_user_id is set on first sync (when NULL), then preserved for subsequent syncs.
+ * Once set, it never changes - we use it to update the user profile in Zendesk.
+ * 
+ * @param {string} ac_id - AlayaCare ID
+ * @param {number} zendesk_user_id - Zendesk user ID (from Zendesk API response)
+ * @param {string} last_synced_at - ISO timestamp of when sync completed
+ * @param {string} userType - 'client' or 'caregiver'
+ */
+export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at, userType) {
   const db = getDb();
   const lookupKey = normalizeAcLookupKey(ac_id, userType);
   
-  // Convert identities to JSON string if provided
-  let identitiesJson = null;
-  if (identities !== null && identities !== undefined) {
-    if (Array.isArray(identities) || typeof identities === "object") {
-      identitiesJson = JSON.stringify(identities);
-    } else if (typeof identities === "string") {
-      identitiesJson = identities;
-    }
-  }
-  
-  // Prepare statement with or without identities update
-  const sql = identitiesJson !== null
-    ? `
-      UPDATE user_mappings
-      SET zendesk_user_id = ?,
-          last_synced_at = ?,
-          identities = ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE ac_id = ?
-         OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
-    `
-    : `
-      UPDATE user_mappings
-      SET zendesk_user_id = ?,
-          last_synced_at = ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE ac_id = ?
-         OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
-    `;
+  const sql = `
+    UPDATE user_mappings
+    SET zendesk_user_id = ?,
+        last_synced_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id = ?
+       OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
+  `;
 
   const stmt = db.prepare(sql);
-
-  const params = identitiesJson !== null
-    ? [
-        zendesk_user_id,
-        last_synced_at,
-        identitiesJson,
-        lookupKey || "__ac_lookup__",
-        String(ac_id),
-        userType || null,
-        userType || null
-      ]
-    : [
-        zendesk_user_id,
-        last_synced_at,
-        lookupKey || "__ac_lookup__",
-        String(ac_id),
-        userType || null,
-        userType || null
-      ];
+  const params = [
+    zendesk_user_id,
+    last_synced_at,
+    lookupKey || "__ac_lookup__",
+    String(ac_id),
+    userType || null,
+    userType || null
+  ];
 
   const result = stmt.run(...params);
   if (result.changes === 0) {

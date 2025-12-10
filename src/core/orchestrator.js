@@ -525,8 +525,10 @@ export async function runSync() {
           await syncUserIdentities(jobResult.id, matchedUserData);
           totalIdentitiesSynced++;
 
-          // Update database with zendesk_user_id and identities after syncing
-          updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType, matchedUserData.identities);
+          // Update database with zendesk_user_id and last_synced_at after syncing
+          // Note: zendesk_user_id is set on first sync (when NULL), then preserved for subsequent syncs
+          // Identities are not updated here - they're already in the database from the initial save
+          updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType);
           totalMappingsUpdated++;
 
           if (userType === "client") {
