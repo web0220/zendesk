@@ -136,8 +136,16 @@ async function waitForJob(jobId) {
 // -------------------------------
 async function getZendeskUserIdsFromExternalIds(externalIds) {
   const userIds = [];
+  const total = externalIds.length;
   
-  for (const externalId of externalIds) {
+  for (let i = 0; i < externalIds.length; i++) {
+    const externalId = externalIds[i];
+    
+    // Log progress every 10 items
+    if (i % 10 === 0 || i === total - 1) {
+      logger.info(`Processing ${i + 1}/${total} external_ids...`);
+    }
+    
     try {
       const query = `external_id:${externalId}`;
       const res = await zendeskLimiter.schedule(() => zendesk.get(`/users/search.json?query=${encodeURIComponent(query)}`));
