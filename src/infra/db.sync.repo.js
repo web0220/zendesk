@@ -3,6 +3,8 @@ import { extractMappedFields, buildStorageKeys, hydrateMapping } from "../domain
 import { getDb } from "./db.api.js";
 import { fetchClientDetail, fetchCaregiverDetail, fetchClientStatusOnly, fetchCaregiverStatusOnly } from "../services/alayacare/alayacare.api.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
+import { getUserIdentities, deleteUserIdentity } from "../services/zendesk/zendesk.api.js";
+import { extractAllEmails, findUsersSharingEmail, isAliasedEmail, extractUnaliasedEmail } from "./db.duplicate.repo.js";
 
 const ALVITA_COMPANY_ORG_ID = "40994316312731";
 
@@ -59,9 +61,11 @@ function initializePreparedStatements() {
       -- This ensures the database has the latest identities when reading to send to Zendesk
       identities = excluded.identities,
       zendesk_primary = excluded.zendesk_primary,
-      -- shared_phone_number should only be set for new users (duplicate handling)
-      -- For existing users, preserve it (it's set by duplicate processing)
-      shared_phone_number = CASE WHEN zendesk_user_id IS NULL THEN excluded.shared_phone_number ELSE shared_phone_number END,
+      -- shared_phone_number: Always set to NULL in Phase 1 (will be set later if needed)
+      -- This ensures clean state at the start of each sync
+      shared_phone_number = NULL,
+      -- email: Always update from fresh API data (will be aliased in Phase 2 if needed)
+      email = excluded.email,
       -- Mark as active (found in current sync)
       current_active = 1,
       -- Reset non_active_status_fetched flag when user becomes active again
@@ -419,6 +423,225 @@ function updateUserStatusInDatabase(acId, status, userType) {
     );
     stmt.run(status, acId);
     logger.debug(`   ✅ Updated caregiver_status for ac_id=${acId}: ${status || "null"} (marked as fetched)`);
+  }
+}
+
+/**
+ * Phase 3: Process non-active users - fetch full data, check email conflicts, update Zendesk
+ * 
+ * @param {Object} user - Non-active user from database
+ * @returns {Promise<Object>} Result with success status and updated user data
+ */
+export async function processNonActiveUser(user) {
+  if (!user || !user.source_ac_id || !user.user_type || !user.zendesk_user_id) {
+    logger.warn(`⚠️ Cannot process non-active user: missing required fields for ac_id=${user?.ac_id}`);
+    return { success: false, user: null };
+  }
+
+  const sourceAcId = user.source_ac_id;
+  const userType = user.user_type;
+  const acId = user.ac_id;
+  const zendeskUserId = user.zendesk_user_id;
+
+  try {
+    logger.info(`📡 Phase 3: Fetching full data for non-active ${userType} ${sourceAcId} (ac_id: ${acId})`);
+
+    // Fetch full user data from AlayaCare
+    let rawUserData = null;
+    if (userType === "client") {
+      rawUserData = await fetchClientDetail(Number(sourceAcId));
+    } else if (userType === "caregiver") {
+      rawUserData = await fetchCaregiverDetail(Number(sourceAcId));
+    } else {
+      logger.warn(`⚠️ Unknown user_type "${userType}" for ac_id=${acId}`);
+      return { success: false, user: null };
+    }
+
+    if (!rawUserData) {
+      logger.warn(`⚠️ User ${userType} ${sourceAcId} not found in AlayaCare (likely deleted)`);
+      return { success: false, user: null };
+    }
+
+    // Map like Phase 1
+    let entity = null;
+    if (userType === "client") {
+      entity = mapClientUser(rawUserData);
+    } else if (userType === "caregiver") {
+      entity = mapCaregiverUser(rawUserData);
+    }
+
+    if (!entity) {
+      logger.warn(`⚠️ Failed to map ${userType} ${sourceAcId} to UserEntity`);
+      return { success: false, user: null };
+    }
+
+    const mappedPayload = entity.toZendeskPayload();
+    const fields = extractMappedFields(mappedPayload);
+
+    // Get all emails from mapped data (email field and identities)
+    const mappedEmails = new Set();
+    if (fields.email) {
+      mappedEmails.add(fields.email.toLowerCase());
+    }
+    if (fields.identities) {
+      let identities = fields.identities;
+      if (typeof identities === "string") {
+        try {
+          identities = JSON.parse(identities);
+        } catch {
+          identities = [];
+        }
+      }
+      if (Array.isArray(identities)) {
+        identities.forEach((identity) => {
+          if (identity.type === "email" && identity.value) {
+            mappedEmails.add(identity.value.toLowerCase());
+          }
+        });
+      }
+    }
+
+    // Check if any email is shared by active users
+    const emailsToAlias = [];
+    const emailsToDeleteFromZendesk = [];
+
+    for (const email of mappedEmails) {
+      const unaliasedEmail = isAliasedEmail(email) ? extractUnaliasedEmail(email) : email;
+      const activeUsersSharingEmail = findUsersSharingEmail(unaliasedEmail, acId);
+
+      if (activeUsersSharingEmail.length > 0) {
+        logger.info(
+          `   🔍 Email ${email} is shared by ${activeUsersSharingEmail.length} active user(s) - will alias and delete from Zendesk`
+        );
+        emailsToAlias.push({ original: email, unaliased: unaliasedEmail });
+      }
+    }
+
+    // If emails need aliasing, get identities from Zendesk and delete conflicting ones
+    if (emailsToAlias.length > 0) {
+      logger.info(`   🔄 Getting identities from Zendesk for user ${zendeskUserId}...`);
+      const zendeskIdentities = await getUserIdentities(zendeskUserId);
+
+      for (const { original, unaliased } of emailsToAlias) {
+        // Find email identity in Zendesk that matches
+        const matchingIdentity = zendeskIdentities.find(
+          (identity) => identity.type === "email" && identity.value?.toLowerCase() === unaliased.toLowerCase()
+        );
+
+        if (matchingIdentity) {
+          logger.info(`   🗑️  Deleting email identity ${matchingIdentity.id} (${matchingIdentity.value}) from Zendesk`);
+          try {
+            await deleteUserIdentity(zendeskUserId, matchingIdentity.id);
+            emailsToDeleteFromZendesk.push(matchingIdentity.id);
+          } catch (error) {
+            logger.error(`   ❌ Failed to delete identity ${matchingIdentity.id}: ${error.message}`);
+          }
+        }
+      }
+
+      // Alias emails in mapped data
+      const userTypePrefix = userType === "client" ? "client" : "caregiver";
+      
+      // Alias email field
+      if (fields.email) {
+        const emailLower = fields.email.toLowerCase();
+        const needsAlias = emailsToAlias.some(e => e.original === emailLower || e.unaliased === emailLower);
+        if (needsAlias && !isAliasedEmail(fields.email)) {
+          const emailParts = fields.email.split("@");
+          if (emailParts.length === 2) {
+            fields.email = `${emailParts[0]}+${userTypePrefix}_${mappedPayload.external_id}@${emailParts[1]}`;
+            logger.info(`   🔄 Aliased email field: ${emailLower} → ${fields.email}`);
+          }
+        }
+      }
+
+      // Alias email identities
+      if (fields.identities) {
+        let identities = fields.identities;
+        if (typeof identities === "string") {
+          try {
+            identities = JSON.parse(identities);
+          } catch {
+            identities = [];
+          }
+        }
+        if (Array.isArray(identities)) {
+          fields.identities = identities.map((identity) => {
+            if (identity.type === "email" && identity.value) {
+              const emailLower = identity.value.toLowerCase();
+              const needsAlias = emailsToAlias.some(e => e.original === emailLower || e.unaliased === emailLower);
+              if (needsAlias && !isAliasedEmail(identity.value)) {
+                const emailParts = identity.value.split("@");
+                if (emailParts.length === 2) {
+                  const aliasedEmail = `${emailParts[0]}+${userTypePrefix}_${mappedPayload.external_id}@${emailParts[1]}`;
+                  logger.info(`   🔄 Aliased email identity: ${identity.value} → ${aliasedEmail}`);
+                  return { ...identity, value: aliasedEmail };
+                }
+              }
+            }
+            return identity;
+          });
+        }
+      }
+    }
+
+    // Save to database (with aliased emails if needed)
+    const db = getDb();
+    const { acKey } = buildStorageKeys(mappedPayload, fields);
+    
+    const updateStmt = db.prepare(`
+      UPDATE user_mappings
+      SET email = ?,
+          phone = ?,
+          coordinator_pod = ?,
+          case_rating = ?,
+          client_status = ?,
+          clinical_rn_manager = ?,
+          sales_rep = ?,
+          caregiver_status = ?,
+          department = ?,
+          market = ?,
+          identities = ?,
+          zendesk_primary = ?,
+          shared_phone_number = NULL,
+          non_active_status_fetched = 1,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE ac_id = ?
+    `);
+
+    updateStmt.run(
+      fields.email,
+      fields.phone,
+      fields.coordinator_pod,
+      fields.case_rating,
+      fields.client_status,
+      fields.clinical_rn_manager,
+      fields.sales_rep,
+      fields.caregiver_status,
+      fields.department,
+      fields.market,
+      typeof fields.identities === "string" ? fields.identities : JSON.stringify(fields.identities),
+      fields.zendesk_primary ? 1 : 0,
+      acKey
+    );
+
+    logger.info(`   ✅ Updated non-active user ${acId} in database`);
+
+    // Reload user from database
+    const updatedUser = db
+      .prepare("SELECT * FROM user_mappings WHERE ac_id = ?")
+      .get(acKey);
+    const hydratedUser = hydrateMapping(updatedUser);
+
+    return { success: true, user: hydratedUser, deletedIdentityIds: emailsToDeleteFromZendesk };
+  } catch (error) {
+    logger.error(
+      `❌ Failed to process non-active user ${userType} ${sourceAcId} (ac_id: ${acId}): ${error.message}`
+    );
+    if (error.response) {
+      logger.error(`   API Response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    }
+    return { success: false, user: null };
   }
 }
 

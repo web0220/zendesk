@@ -57,5 +57,20 @@ export function updateUserCustomFields(userId, userFields) {
   });
 }
 
+/**
+ * Delete a user identity from Zendesk
+ * @param {number} userId - Zendesk user ID
+ * @param {number} identityId - Identity ID to delete
+ * @returns {Promise<boolean>} True if successful
+ */
+export function deleteUserIdentity(userId, identityId) {
+  return zendeskRequest(async () => {
+    await zendeskLimiter.schedule(() => 
+      zendeskClient.delete(`/users/${userId}/identities/${identityId}.json`)
+    );
+    return true;
+  });
+}
+
 logger.info("💬 Zendesk API client initialized");
 

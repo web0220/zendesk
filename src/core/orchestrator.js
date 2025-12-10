@@ -3,6 +3,8 @@ import { fetchClients, fetchCaregivers } from "../services/alayacare/fetch.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
 import { bulkUpsertUsers, updateUser } from "../services/zendesk/upsert.js";
 import { syncUserIdentities } from "../services/zendesk/identitySync.js";
+import { getUserIdentities, deleteUserIdentity } from "../services/zendesk/zendesk.api.js";
+import { isAliasedEmail } from "../infra/db.duplicate.repo.js";
 import { UserEntity } from "../domain/UserEntity.js";
 import { chunkArray, runWithLimit } from "../utils/rateLimiter.js";
 import {
@@ -12,10 +14,9 @@ import {
   processDuplicateEmailsAndPhones,
   resetCurrentActiveFlag,
   getUsersWithStatusChange,
-  fetchAndUpdateUserStatus,
   getAllUsersForSync,
-  processNonActiveUserEmailSwaps,
   findEmailGroupsWithoutPrimary,
+  processNonActiveUser,
 } from "../infra/database.js";
 import { sendEmailNotificationForDuplicateUsers } from "../services/notification/email.js";
 
@@ -104,78 +105,50 @@ export async function runSync() {
       );
     }
 
-    // Process duplicates for all active users (current_active = 1)
-    // The function itself checks if there are active users and returns early if not
-    logger.info("🔧 Processing duplicate emails and phone numbers...");
-    processDuplicateEmailsAndPhones();
-    logger.info("✅ Finished processing duplicates");
+    // Phase 2: Process duplicate emails for active users
+    logger.info("🔧 Phase 2: Processing duplicate emails for active users...");
+    const usersNeedingPrimary = processDuplicateEmailsAndPhones();
+    logger.info("✅ Finished processing email duplicates");
+    
+    if (usersNeedingPrimary.length > 0) {
+      logger.error(`❌ Found ${usersNeedingPrimary.length} user(s) in email groups without zendesk_primary tag`);
+      logger.error(`   These users will be excluded from Zendesk sync`);
+    }
 
-    // Step 2: Detect and update status for users who changed from active to inactive
-    logger.info("🔍 Checking for users with status changes...");
+    // Phase 3: Process non-active users
+    logger.info("🔍 Phase 3: Processing non-active users...");
     const usersWithStatusChange = getUsersWithStatusChange();
     
-    // Track status changes with details
-    const statusChanges = [];
+    const usersNeedingPrimarySet = new Set(usersNeedingPrimary.map(u => u.ac_id));
     
     if (usersWithStatusChange.length > 0) {
       logger.info(
-        `📋 Found ${usersWithStatusChange.length} users with potential status change. Fetching current status from AlayaCare...`
+        `📋 Found ${usersWithStatusChange.length} non-active users. Processing full data and email conflicts...`
       );
       
-      // Log removed/inactive users
-      logger.info("📋 Users not found in current sync (may be inactive/removed):");
-      usersWithStatusChange.slice(0, 20).forEach((user) => {
-        const userType = user.user_type || "unknown";
-        const userName = user.name || user.external_id || "unknown";
-        logger.info(
-          `   ➖ ${userType.toUpperCase()}: ${userName} (AC ID: ${user.ac_id}, Zendesk ID: ${user.zendesk_user_id || "N/A"})`
-        );
-      });
-      if (usersWithStatusChange.length > 20) {
-        logger.info(`   ... and ${usersWithStatusChange.length - 20} more users`);
-      }
-
-      // Fetch status updates with concurrency control
-      const statusUpdateTasks = usersWithStatusChange.map((user) => async () => {
-        const oldStatus = user.user_type === "client" ? user.client_status : user.caregiver_status;
-        const result = await fetchAndUpdateUserStatus(user);
-        if (result && result.statusChanged) {
-          statusChanges.push({
-            name: user.name || user.external_id || "unknown",
-            userType: user.user_type || "unknown",
-            acId: user.ac_id,
-            zendeskUserId: user.zendesk_user_id,
-            oldStatus: oldStatus || "null",
-            newStatus: result.newStatus || "null",
-          });
-        }
+      // Process each non-active user (one by one with concurrency control)
+      const processTasks = usersWithStatusChange.map((user) => async () => {
+        const result = await processNonActiveUser(user);
         return result;
       });
 
       const DETAIL_CONCURRENCY = Number(process.env.ALAYACARE_DETAIL_CONCURRENCY) || 10;
-      const statusUpdateResults = await runWithLimit(statusUpdateTasks, DETAIL_CONCURRENCY);
+      const processResults = await runWithLimit(processTasks, DETAIL_CONCURRENCY);
       
-      const successfulUpdates = statusUpdateResults.filter((r) => r && r.success).length;
-      const failedUpdates = statusUpdateResults.length - successfulUpdates;
+      const successfulProcesses = processResults.filter((r) => r && r.success).length;
+      const failedProcesses = processResults.length - successfulProcesses;
       
       logger.info(
-        `✅ Status update complete: ${successfulUpdates} successful, ${failedUpdates} failed`
+        `✅ Non-active user processing complete: ${successfulProcesses} successful, ${failedProcesses} failed`
       );
       
-      if (failedUpdates > 0) {
-        logger.warn(
-          `⚠️ ${failedUpdates} users failed to update status. They will be retried in next sync.`
-        );
-      }
+      // Update processed users to Zendesk via PUT (status) and POST (identities)
+      const usersToUpdate = processResults
+        .filter((r) => r && r.success && r.user)
+        .map((r) => r.user);
       
-      // Step 3: Process email/phone swaps for non-active users
-      // This handles the edge case where a primary user becomes non-active
-      // and an active user needs to get the original email back
-      const usersToUpdate = processNonActiveUserEmailSwaps(usersWithStatusChange);
-      
-      // Update users to Zendesk using PUT method (for email/phone changes)
       if (usersToUpdate.length > 0) {
-        logger.info(`🔄 Updating ${usersToUpdate.length} user(s) to Zendesk via PUT (email/phone changes)...`);
+        logger.info(`🔄 Updating ${usersToUpdate.length} non-active user(s) to Zendesk...`);
         
         const updateTasks = usersToUpdate.map((user) => async () => {
           if (!user.zendesk_user_id) {
@@ -191,7 +164,14 @@ export async function runSync() {
               return { success: false, userId: user.zendesk_user_id };
             }
             
+            // Update user status via PUT
             const result = await updateUser(user.zendesk_user_id, zendeskPayload);
+            
+            // Update identities via POST (like normal user)
+            if (zendeskPayload.identities && Array.isArray(zendeskPayload.identities)) {
+              await syncUserIdentities(user.zendesk_user_id, { identities: zendeskPayload.identities });
+            }
+            
             return { success: !!result, userId: user.zendesk_user_id };
           } catch (error) {
             logger.error(
@@ -208,7 +188,7 @@ export async function runSync() {
         const failedZendeskUpdates = updateResults.length - successfulUpdates;
         
         logger.info(
-          `✅ Zendesk PUT updates complete: ${successfulUpdates} successful, ${failedZendeskUpdates} failed`
+          `✅ Zendesk updates complete: ${successfulUpdates} successful, ${failedZendeskUpdates} failed`
         );
         
         if (failedZendeskUpdates > 0) {
@@ -218,7 +198,7 @@ export async function runSync() {
         }
       }
     } else {
-      logger.info("✅ No users with status changes detected.");
+      logger.info("✅ No non-active users detected.");
     }
 
     // Send ALL users from database to Zendesk to ensure it's always in sync
@@ -336,8 +316,24 @@ export async function runSync() {
       };
     }
 
-    const zendeskUsers = hydrateEntitiesFromDb(usersToSync);
-    logger.info(`📦 Converted ${zendeskUsers.length} database records into Zendesk payloads`);
+    // Phase 4: Separate primary users from non-primary users
+    logger.info("🔧 Phase 4: Separating primary and non-primary users for Zendesk sync...");
+    
+    const primaryUsers = usersToSync.filter((u) => u.zendesk_primary === 1 || u.zendesk_primary === true);
+    const nonPrimaryUsers = usersToSync.filter((u) => !u.zendesk_primary || u.zendesk_primary === 0 || u.zendesk_primary === false);
+    
+    logger.info(`   📊 Found ${primaryUsers.length} primary user(s) and ${nonPrimaryUsers.length} non-primary user(s)`);
+    
+    // Also exclude users needing primary tag from sync
+    const nonPrimaryUsersToSync = nonPrimaryUsers.filter((u) => !usersNeedingPrimarySet.has(u.ac_id));
+    const excludedFromPrimaryTag = nonPrimaryUsers.length - nonPrimaryUsersToSync.length;
+    
+    if (excludedFromPrimaryTag > 0) {
+      logger.warn(`   ⚠️  Excluding ${excludedFromPrimaryTag} non-primary user(s) due to missing zendesk_primary tag in email groups`);
+    }
+    
+    const zendeskUsers = hydrateEntitiesFromDb(nonPrimaryUsersToSync);
+    logger.info(`📦 Converted ${zendeskUsers.length} non-primary database records into Zendesk payloads`);
     
     // Debug: Log status values being sent to Zendesk
     const usersWithStatus = zendeskUsers.filter((u) => {
@@ -593,7 +589,101 @@ export async function runSync() {
     });
 
     const results = await runWithLimit(tasks, BATCH_CONCURRENCY);
-    logger.info("✅ All batches submitted and confirmed successfully.");
+    logger.info("✅ All non-primary batches submitted and confirmed successfully.");
+    
+    // Process primary users one by one
+    if (primaryUsers.length > 0) {
+      logger.info(`🔑 Processing ${primaryUsers.length} primary user(s) one by one...`);
+      
+      const primaryUserTasks = primaryUsers.map((user) => async () => {
+        try {
+          const zendeskPayload = UserEntity.fromDbRow(user)?.toZendeskPayload();
+          if (!zendeskPayload) {
+            logger.warn(`⚠️  Failed to convert primary user ${user.ac_id} to Zendesk payload`);
+            return { success: false, userId: null, isNew: false };
+          }
+          
+          // If new user (no zendesk_user_id), use batch upsert
+          if (!user.zendesk_user_id) {
+            logger.info(`   ➕ Primary user ${user.ac_id} is new - using batch upsert`);
+            const result = await bulkUpsertUsers([zendeskPayload]);
+            const jobResults = result?.job_status?.results || [];
+            if (jobResults.length > 0 && jobResults[0].id) {
+              const zendeskUserId = jobResults[0].id;
+              updateZendeskUserId(user.ac_id, zendeskUserId);
+              
+              // Sync identities
+              if (zendeskPayload.identities && Array.isArray(zendeskPayload.identities)) {
+                await syncUserIdentities(zendeskUserId, { identities: zendeskPayload.identities });
+              }
+              
+              totalCreated++;
+              if (user.user_type === "client") {
+                clientsCreated++;
+              } else if (user.user_type === "caregiver") {
+                caregiversCreated++;
+              }
+              return { success: true, userId: zendeskUserId, isNew: true };
+            }
+            return { success: false, userId: null, isNew: true };
+          }
+          
+          // Existing user: GET identities, find aliased emails, DELETE them, then sync
+          logger.info(`   🔄 Primary user ${user.ac_id} (Zendesk ID: ${user.zendesk_user_id}) is existing - cleaning aliases`);
+          
+          const zendeskIdentities = await getUserIdentities(user.zendesk_user_id);
+          
+          // Find aliased email identities (+client_ or +caregiver_)
+          const aliasedEmailIdentities = zendeskIdentities.filter(
+            (identity) => identity.type === "email" && identity.value && isAliasedEmail(identity.value)
+          );
+          
+          if (aliasedEmailIdentities.length > 0) {
+            logger.info(`   🗑️  Found ${aliasedEmailIdentities.length} aliased email identity(ies) to delete`);
+            for (const identity of aliasedEmailIdentities) {
+              try {
+                await deleteUserIdentity(user.zendesk_user_id, identity.id);
+                logger.info(`   ✅ Deleted aliased email identity ${identity.id} (${identity.value})`);
+              } catch (error) {
+                logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
+              }
+            }
+          } else {
+            logger.debug(`   ✅ No aliased email identities found for primary user ${user.ac_id}`);
+          }
+          
+          // Update user via PUT
+          const result = await updateUser(user.zendesk_user_id, zendeskPayload);
+          
+          // Sync identities via POST
+          if (zendeskPayload.identities && Array.isArray(zendeskPayload.identities)) {
+            await syncUserIdentities(user.zendesk_user_id, { identities: zendeskPayload.identities });
+          }
+          
+          totalUpdated++;
+          if (user.user_type === "client") {
+            clientsUpdated++;
+          } else if (user.user_type === "caregiver") {
+            caregiversUpdated++;
+          }
+          
+          return { success: !!result, userId: user.zendesk_user_id, isNew: false };
+        } catch (error) {
+          logger.error(`❌ Failed to process primary user ${user.ac_id}: ${error.message}`);
+          return { success: false, userId: user.zendesk_user_id, isNew: false };
+        }
+      });
+      
+      const PRIMARY_CONCURRENCY = Number(process.env.ZENDESK_PRIMARY_CONCURRENCY) || 3;
+      const primaryResults = await runWithLimit(primaryUserTasks, PRIMARY_CONCURRENCY);
+      
+      const successfulPrimary = primaryResults.filter((r) => r && r.success).length;
+      const failedPrimary = primaryResults.length - successfulPrimary;
+      
+      logger.info(
+        `✅ Primary user processing complete: ${successfulPrimary} successful, ${failedPrimary} failed`
+      );
+    }
 
     const totalProcessed = totalMappingsUpdated;
     const totalExpected = zendeskUsers.length;
@@ -681,8 +771,8 @@ export async function runSync() {
         },
       },
       statusChanges: {
-        count: statusChanges.length,
-        changes: statusChanges,
+        count: 0,
+        changes: [],
       },
       countsByType: {
         clients: {

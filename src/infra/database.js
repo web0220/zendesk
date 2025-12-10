@@ -8,6 +8,7 @@ export {
   getUsersWithStatusChange,
   fetchAndUpdateUserStatus,
   getAllUsersForSync,
+  processNonActiveUser,
 } from "./db.sync.repo.js";
 export {
   upsertUserMapping,

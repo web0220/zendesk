@@ -2,7 +2,7 @@ import { logger } from "../config/logger.js";
 import { hydrateMapping } from "../domain/user.db.mapper.js";
 import { getDb } from "./db.api.js";
 
-function extractAllEmails(user) {
+export function extractAllEmails(user) {
   const emails = new Set();
 
   if (user.email) {
@@ -58,6 +58,36 @@ function extractAllPhoneNumbers(user) {
   }
 
   return Array.from(phones);
+}
+
+/**
+ * Check if an email is aliased using our pattern (+client_ or +caregiver_)
+ * This distinguishes our aliases from natural + signs in emails
+ */
+export function isAliasedEmail(email) {
+  if (!email || !email.includes('+') || !email.includes('@')) {
+    return false;
+  }
+  
+  const [localPart] = email.split('@');
+  // Check if it matches our pattern: +client_ or +caregiver_ followed by external_id
+  const aliasPattern = /\+client_|\+caregiver_/;
+  return aliasPattern.test(localPart);
+}
+
+/**
+ * Extract unaliased email from aliased format
+ * Only works for our aliasing pattern (+client_ or +caregiver_)
+ */
+export function extractUnaliasedEmail(aliasedEmail) {
+  if (!isAliasedEmail(aliasedEmail)) {
+    return aliasedEmail; // Not aliased or not our pattern
+  }
+  
+  const [localPart, domain] = aliasedEmail.split('@');
+  // Remove everything after +client_ or +caregiver_
+  const unaliasedLocal = localPart.replace(/\+client_.*$|\+caregiver_.*$/, '');
+  return `${unaliasedLocal}@${domain}`;
 }
 
 /**
@@ -167,29 +197,27 @@ function selectPrimaryUserForEmailGroup(group) {
 
 /**
  * Process email duplicates: group users by shared emails, alias duplicate emails.
- * This is the FIRST step and only handles emails, not phones.
- * After aliasing all duplicates, removes alias pattern from zendesk_primary users.
+ * Simplified version: Only alias non-primary users, track users needing primary tag.
+ * 
+ * @returns {Array} Array of users who need zendesk_primary tag (groups with no primary)
  */
 function processEmailDuplicates() {
   const db = getDb();
-  logger.info("📧 Step 1: Processing duplicate emails...");
+  logger.info("📧 Phase 2: Processing duplicate emails for active users...");
 
   // Get all ACTIVE users (current_active = 1)
-  // Non-active users don't need processing because their data won't be overwritten (we only fetch active users)
   const allUsers = db
     .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
     .all()
     .map(hydrateMapping);
-  logger.info(`📊 Found ${allUsers.length} active users in database (processing all, regardless of sync status)`);
+  logger.info(`📊 Found ${allUsers.length} active users in database`);
 
   if (allUsers.length === 0) {
     logger.info("✅ No users found, skipping email duplicate processing");
-    return;
+    return [];
   }
 
-
-  // Build global email index: email -> [users who have this email]
-  // This includes ALL users (synced and pending) to catch all duplicates
+  // Build email index: email -> [users who have this email]
   const globalEmailIndex = new Map();
   for (const user of allUsers) {
     const userEmails = extractAllEmails(user);
@@ -207,55 +235,62 @@ function processEmailDuplicates() {
 
   if (emailGroups.length === 0) {
     logger.info("✅ No email duplicate groups found");
-    return;
+    return [];
   }
 
+  const usersNeedingPrimary = [];
   let processedCount = 0;
-  const processedUserIds = new Set();
 
   // Process each email group
   for (const group of emailGroups) {
-    // Skip if already processed
-    if (group.some((u) => processedUserIds.has(u.ac_id))) {
-      logger.debug(`⏭️  Skipping email group (already processed): ${group.map((u) => u.ac_id).join(", ")}`);
-      continue;
-    }
-
     logger.info(
       `   Processing email group with ${group.length} user(s): ${group.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ")}`
     );
 
-    // Process ALL users in the group (including primary) - alias all emails to avoid conflicts
-    // This ensures all emails are unique and there's no confusion if primary user is deleted
+    // Find zendesk_primary user in this group
+    const primaryUser = group.find((u) => u.zendesk_primary === 1 || u.zendesk_primary === true);
+
+    if (!primaryUser) {
+      // No primary user found - log error and save to constant
+      logger.error(
+        `❌ ERROR: No zendesk_primary user found in email group. Users: ${group.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ")}`
+      );
+      // Add all users in this group to the list
+      usersNeedingPrimary.push(...group);
+      continue;
+    }
+
+    logger.info(`   ✅ Found zendesk_primary user: ${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id})`);
+
+    // Alias all non-primary users' emails
     for (const user of group) {
+      if (user.ac_id === primaryUser.ac_id) {
+        continue; // Skip primary user
+      }
 
       let newEmail = user.email;
-      const originalEmail = user.email ? user.email.toLowerCase() : null;
       let emailWasAliased = false;
 
-      // Alias email if it matches ANY other user's email (including other users in the same group)
-      // This ensures ALL emails are unique, even for primary users
+      // Alias email field if it matches primary user's email
       if (newEmail) {
         const normalizedEmail = newEmail.toLowerCase();
-        const usersWithThisEmail = globalEmailIndex.get(normalizedEmail) || [];
-        const otherUsersWithEmail = usersWithThisEmail.filter(
-          (u) => u.ac_id !== user.ac_id
-        );
+        const primaryEmails = extractAllEmails(primaryUser).map(e => e.toLowerCase());
         
-        // If another user has this email, ALWAYS alias it (even for primary user)
-        if (otherUsersWithEmail.length > 0) {
+        if (primaryEmails.includes(normalizedEmail)) {
           const emailParts = newEmail.split("@");
           if (emailParts.length === 2) {
-            newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+            const userType = user.user_type || "user";
+            const prefix = userType === "client" ? "client" : "caregiver";
+            newEmail = `${emailParts[0]}+${prefix}_${user.external_id}@${emailParts[1]}`;
             emailWasAliased = true;
-            logger.debug(
-              `   Aliasing email for user ${user.ac_id}: ${user.email} → ${newEmail} (found in ${otherUsersWithEmail.length} other user(s))`
+            logger.info(
+              `   🔄 Aliasing email for user ${user.ac_id}: ${user.email} → ${newEmail}`
             );
           }
         }
       }
 
-      // Process identities: alias all email identities that match other users' emails
+      // Process identities: alias email identities that match primary user's emails
       let identities = user.identities;
       if (typeof identities === "string") {
         try {
@@ -268,38 +303,29 @@ function processEmailDuplicates() {
         identities = [];
       }
 
-      // Process email identities: alias ALL email identities that match other users' emails
+      const primaryEmails = extractAllEmails(primaryUser).map(e => e.toLowerCase());
       const processedIdentities = identities.map((identity) => {
-        // Keep phone identities (they'll be processed separately)
         if (identity.type === "phone" || identity.type === "phone_number") {
-          return identity;
+          return identity; // Keep phone identities
         }
         
-        // Handle email identities
-        if (identity.type === "email") {
-          const identityEmail = identity.value?.toLowerCase();
+        if (identity.type === "email" && identity.value) {
+          const identityEmail = identity.value.toLowerCase();
           
           // If we aliased the email field and this is the same email, remove it from identities
-          // (to avoid having both the aliased email in email field and original in identities)
-          if (emailWasAliased && originalEmail && identityEmail === originalEmail) {
+          if (emailWasAliased && user.email && identityEmail === user.email.toLowerCase()) {
             return null; // Remove this identity
           }
           
-          // Check if this email already exists for another user
-          // If ANY other user has this email, we must alias it to avoid Zendesk duplicates
-          const usersWithThisEmail = globalEmailIndex.get(identityEmail) || [];
-          const otherUsersWithEmail = usersWithThisEmail.filter(
-            (u) => u.ac_id !== user.ac_id
-          );
-          
-          // If another user has this email, ALWAYS alias it (regardless of sync status)
-          if (otherUsersWithEmail.length > 0) {
-            // Alias this email identity
+          // Check if this email matches primary user's email
+          if (primaryEmails.includes(identityEmail)) {
             const emailParts = identity.value.split("@");
             if (emailParts.length === 2) {
-              const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
-              logger.debug(
-                `   Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id} (found in ${otherUsersWithEmail.length} other user(s))`
+              const userType = user.user_type || "user";
+              const prefix = userType === "client" ? "client" : "caregiver";
+              const aliasedEmail = `${emailParts[0]}+${prefix}_${user.external_id}@${emailParts[1]}`;
+              logger.info(
+                `   🔄 Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id}`
               );
               return { ...identity, value: aliasedEmail };
             }
@@ -307,10 +333,9 @@ function processEmailDuplicates() {
         }
         
         return identity;
-      }).filter((identity) => identity !== null); // Remove null entries
+      }).filter((identity) => identity !== null);
 
-      // Update user: alias email and identities if needed
-      // Only update if something changed
+      // Update user if email or identities changed
       if (emailWasAliased || JSON.stringify(processedIdentities) !== JSON.stringify(identities)) {
         const updateStmt = db.prepare(`
           UPDATE user_mappings
@@ -321,214 +346,30 @@ function processEmailDuplicates() {
         `);
 
         updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
-        const emailChanges = emailWasAliased ? `email aliased: ${user.email} → ${newEmail}` : "";
-        const identityChanges = processedIdentities.length !== identities.length 
-          ? `, ${identities.length - processedIdentities.length} email identity(ies) aliased/removed`
-          : "";
-        logger.debug(`   Updated user ${user.ac_id}: ${emailChanges}${identityChanges}`);
         processedCount++;
       }
-      processedUserIds.add(user.ac_id);
     }
   }
 
   logger.info(`✅ Processed ${processedCount} duplicate users in ${emailGroups.length} email group(s)`);
-
-  // Second pass: Process ALL active users (even those not in groups) to catch any remaining duplicates
-  // This ensures we catch edge cases where emails might be missed
-  logger.info("🔍 Second pass: Checking all active users for duplicate emails...");
-  // allUsers is already filtered by current_active = 1, so use it directly
-  let secondPassCount = 0;
-
-  for (const user of allUsers) {
-    // Skip if already processed in first pass
-    if (processedUserIds.has(user.ac_id)) {
-      continue;
-    }
-
-    let newEmail = user.email;
-    const originalEmail = user.email ? user.email.toLowerCase() : null;
-    let emailWasAliased = false;
-
-    // Check email field against global index
-    if (newEmail) {
-      const normalizedEmail = newEmail.toLowerCase();
-      const usersWithThisEmail = globalEmailIndex.get(normalizedEmail) || [];
-      const otherUsersWithEmail = usersWithThisEmail.filter((u) => u.ac_id !== user.ac_id);
-      
-      if (otherUsersWithEmail.length > 0) {
-        const emailParts = newEmail.split("@");
-        if (emailParts.length === 2) {
-          newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
-          emailWasAliased = true;
-          logger.debug(
-            `   [Second pass] Aliasing email field ${user.email} → ${newEmail} for user ${user.ac_id}`
-          );
-        }
-      }
-    }
-
-    // Check all email identities against global index
-    let identities = user.identities;
-    if (typeof identities === "string") {
-      try {
-        identities = JSON.parse(identities);
-      } catch {
-        identities = [];
-      }
-    }
-    if (!Array.isArray(identities)) {
-      identities = [];
-    }
-
-    const processedIdentities = identities.map((identity) => {
-      if (identity.type === "phone" || identity.type === "phone_number") {
-        return identity;
-      }
-      
-      if (identity.type === "email") {
-        const identityEmail = identity.value?.toLowerCase();
-        
-        // Remove if we aliased the email field and this is the same email
-        if (emailWasAliased && originalEmail && identityEmail === originalEmail) {
-          return null;
-        }
-        
-        // Check if this email exists for another user
-        const usersWithThisEmail = globalEmailIndex.get(identityEmail) || [];
-        const otherUsersWithEmail = usersWithThisEmail.filter((u) => u.ac_id !== user.ac_id);
-        
-        if (otherUsersWithEmail.length > 0) {
-          const emailParts = identity.value.split("@");
-          if (emailParts.length === 2) {
-            const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
-            logger.debug(
-              `   [Second pass] Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id}`
-            );
-            return { ...identity, value: aliasedEmail };
-          }
-        }
-      }
-      
-      return identity;
-    }).filter((identity) => identity !== null);
-
-    // Only update if something changed
-    if (emailWasAliased || JSON.stringify(processedIdentities) !== JSON.stringify(identities)) {
-      const updateStmt = db.prepare(`
-        UPDATE user_mappings
-        SET email = ?,
-            identities = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE ac_id = ?
-      `);
-
-      updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
-      secondPassCount++;
-    }
-  }
-
-  if (secondPassCount > 0) {
-    logger.info(`✅ Second pass: Processed ${secondPassCount} additional users`);
-  }
-
-  // Step 3: Restore original emails for zendesk_primary users
-  // After aliasing all duplicates, remove the alias pattern (+tag) from primary users' emails
-  logger.info("🔑 Step 3: Removing alias pattern from zendesk_primary users...");
-  const primaryUsers = db
-    .prepare("SELECT * FROM user_mappings WHERE current_active = 1 AND zendesk_primary = 1")
-    .all()
-    .map(hydrateMapping);
   
-  let restoredCount = 0;
-  
-  for (const primaryUser of primaryUsers) {
-    let needsUpdate = false;
-    let restoredEmail = primaryUser.email;
-    let restoredIdentities = primaryUser.identities;
-
-    // Remove alias pattern from email field (remove everything after +)
-    if (primaryUser.email && primaryUser.email.includes('+') && primaryUser.email.includes('@')) {
-      const emailParts = primaryUser.email.split('@');
-      if (emailParts.length === 2) {
-        const localPart = emailParts[0].split('+')[0]; // Remove everything after +
-        restoredEmail = `${localPart}@${emailParts[1]}`;
-        needsUpdate = true;
-        logger.info(
-          `   🔑 Removing alias from email for primary user ${primaryUser.ac_id}: ${primaryUser.email} → ${restoredEmail}`
-        );
-      }
-    }
-
-    // Remove alias pattern from email identities (remove everything after +)
-    if (primaryUser.identities) {
-      let identities = primaryUser.identities;
-      if (typeof identities === "string") {
-        try {
-          identities = JSON.parse(identities);
-        } catch {
-          identities = [];
-        }
-      }
-      if (!Array.isArray(identities)) {
-        identities = [];
-      }
-
-      restoredIdentities = identities.map((identity) => {
-        if (identity.type === "email" && identity.value && identity.value.includes('+') && identity.value.includes('@')) {
-          // Remove alias pattern: remove everything after +
-          const emailParts = identity.value.split('@');
-          if (emailParts.length === 2) {
-            const localPart = emailParts[0].split('+')[0]; // Remove everything after +
-            const restoredValue = `${localPart}@${emailParts[1]}`;
-            logger.debug(
-              `   Removing alias from email identity for primary user ${primaryUser.ac_id}: ${identity.value} → ${restoredValue}`
-            );
-            return { ...identity, value: restoredValue };
-          }
-        }
-        return identity;
-      });
-
-      // Check if identities changed
-      if (JSON.stringify(restoredIdentities) !== JSON.stringify(identities)) {
-        needsUpdate = true;
-      }
-    }
-
-    // Update primary user if needed
-    if (needsUpdate) {
-      const updateStmt = db.prepare(`
-        UPDATE user_mappings
-        SET email = ?,
-            identities = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE ac_id = ?
-      `);
-
-      const identitiesJson = typeof restoredIdentities === "string" ? restoredIdentities : JSON.stringify(restoredIdentities);
-      const result = updateStmt.run(restoredEmail, identitiesJson, primaryUser.ac_id);
-      
-      if (result.changes > 0) {
-        restoredCount++;
-        logger.info(`   ✅ Removed alias pattern from primary user ${primaryUser.ac_id}`);
-      } else {
-        logger.warn(`   ⚠️  Failed to update primary user ${primaryUser.ac_id} - no rows changed`);
-      }
-    }
+  if (usersNeedingPrimary.length > 0) {
+    logger.error(`❌ Found ${usersNeedingPrimary.length} user(s) in groups without zendesk_primary tag`);
   }
 
-  if (restoredCount > 0) {
-    logger.info(`✅ Removed alias pattern from ${restoredCount} zendesk_primary user(s)`);
-  } else {
-    logger.info("✅ No primary users needed alias removal");
-  }
+  return usersNeedingPrimary;
 }
 
 /**
  * Process phone duplicates: find users with same phone numbers and move to shared_phone_number.
  * This is the SECOND step and only handles phones, not emails.
+ * 
+ * NOTE: Currently commented out per business requirements - phone duplicate logic will be considered later.
+ * Zendesk will handle duplicate phone numbers as shared phone number automatically.
  */
+// Phone duplicate processing is commented out per business requirements
+// Zendesk will handle duplicate phone numbers as shared phone number automatically
+/*
 function processPhoneDuplicates() {
   const db = getDb();
   logger.info("📞 Step 2: Processing duplicate phone numbers...");
@@ -673,32 +514,14 @@ function processPhoneDuplicates() {
 
   logger.info(`✅ Processed ${processedCount} duplicate users in ${phoneGroups.length} phone group(s)`);
 }
+*/
 
-/**
- * Extract unaliased email from aliased email format (e.g., "user+tag@domain.com" -> "user@domain.com")
- */
-function extractUnaliasedEmail(aliasedEmail) {
-  if (!aliasedEmail || !aliasedEmail.includes('+') || !aliasedEmail.includes('@')) {
-    return aliasedEmail; // Not aliased
-  }
-  const [localPart, domain] = aliasedEmail.split('@');
-  const originalLocal = localPart.split('+')[0];
-  return `${originalLocal}@${domain}`;
-}
-
-/**
- * Check if an email is aliased (contains + before @)
- */
-function isEmailAliased(email) {
-  if (!email) return false;
-  return email.includes('+') && email.includes('@');
-}
 
 /**
  * Find all active users who share the same email (checking both email field and identities)
  * This checks if any active user has the target email (either directly or as an aliased email)
  */
-function findUsersSharingEmail(targetEmail, excludeAcId) {
+export function findUsersSharingEmail(targetEmail, excludeAcId) {
   const db = getDb();
   const normalizedTargetEmail = targetEmail.toLowerCase();
   
@@ -724,7 +547,7 @@ function findUsersSharingEmail(targetEmail, excludeAcId) {
       }
       
       // Check if this user's email is aliased and matches when unaliased
-      if (isEmailAliased(emailLower)) {
+      if (isAliasedEmail(emailLower)) {
         const unaliased = extractUnaliasedEmail(emailLower).toLowerCase();
         if (unaliased === normalizedTargetEmail) {
           return true;
@@ -733,7 +556,7 @@ function findUsersSharingEmail(targetEmail, excludeAcId) {
       
       // Check if target email is aliased and matches when unaliased
       // (This handles the case where target is aliased but user has original)
-      if (isEmailAliased(normalizedTargetEmail)) {
+      if (isAliasedEmail(normalizedTargetEmail)) {
         const unaliasedTarget = extractUnaliasedEmail(normalizedTargetEmail).toLowerCase();
         if (emailLower === unaliasedTarget) {
           return true;
@@ -753,7 +576,7 @@ function aliasUserEmail(user) {
   let newEmail = user.email;
   let emailWasAliased = false;
   
-  if (newEmail && !isEmailAliased(newEmail)) {
+  if (newEmail && !isAliasedEmail(newEmail)) {
     const emailParts = newEmail.split("@");
     if (emailParts.length === 2) {
       newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
@@ -775,7 +598,7 @@ function aliasUserEmail(user) {
   }
   
   const processedIdentities = identities.map((identity) => {
-    if (identity.type === "email" && identity.value && !isEmailAliased(identity.value)) {
+    if (identity.type === "email" && identity.value && !isAliasedEmail(identity.value)) {
       const emailParts = identity.value.split("@");
       if (emailParts.length === 2) {
         return { ...identity, value: `${emailParts[0]}+${user.external_id}@${emailParts[1]}` };
@@ -806,7 +629,7 @@ function unaliasUserEmail(user) {
   let newEmail = user.email;
   let emailWasUnaliased = false;
   
-  if (newEmail && isEmailAliased(newEmail)) {
+  if (newEmail && isAliasedEmail(newEmail)) {
     newEmail = extractUnaliasedEmail(newEmail);
     emailWasUnaliased = true;
   }
@@ -825,7 +648,7 @@ function unaliasUserEmail(user) {
   }
   
   const processedIdentities = identities.map((identity) => {
-    if (identity.type === "email" && identity.value && isEmailAliased(identity.value)) {
+    if (identity.type === "email" && identity.value && isAliasedEmail(identity.value)) {
       return { ...identity, value: extractUnaliasedEmail(identity.value) };
     }
     return identity;
@@ -979,7 +802,7 @@ export function findEmailGroupsWithoutPrimary() {
     for (const email of userEmails) {
       const normalizedEmail = email.toLowerCase();
       // Extract unaliased email for grouping
-      const unaliasedEmail = isEmailAliased(normalizedEmail) 
+      const unaliasedEmail = isAliasedEmail(normalizedEmail) 
         ? extractUnaliasedEmail(normalizedEmail).toLowerCase()
         : normalizedEmail;
       
@@ -1037,7 +860,7 @@ export function processNonActiveUserEmailSwaps(usersWithStatusChange) {
     }
     
     // Skip if email is already aliased
-    if (isEmailAliased(nonActiveUser.email)) {
+    if (isAliasedEmail(nonActiveUser.email)) {
       logger.debug(`⏭️  Skipping non-active user ${nonActiveUser.ac_id}: email already aliased`);
       continue;
     }
@@ -1140,16 +963,22 @@ export function processNonActiveUserEmailSwaps(usersWithStatusChange) {
 }
 
 /**
- * Main function: Process email duplicates first, then phone duplicates separately.
+ * Main function: Process email duplicates only.
+ * Phone duplicate processing is commented out per business requirements.
+ * 
+ * @returns {Array} Array of users who need zendesk_primary tag (groups with no primary)
  */
 export function processDuplicateEmailsAndPhones() {
-  logger.info("🔍 Processing duplicate emails and phone numbers...");
+  logger.info("🔍 Processing duplicate emails...");
 
   // Step 1: Process email duplicates (most important - avoid email conflicts)
-  processEmailDuplicates();
+  const usersNeedingPrimary = processEmailDuplicates();
 
-  // Step 2: Process phone duplicates (independent - move to shared_phone_number)
-  processPhoneDuplicates();
+  // Step 2: Process phone duplicates (COMMENTED OUT - will be considered later)
+  // Zendesk will handle duplicate phone numbers as shared phone number automatically
+  // processPhoneDuplicates();
 
-  logger.info("✅ Finished processing all duplicates");
+  logger.info("✅ Finished processing email duplicates");
+  
+  return usersNeedingPrimary || [];
 }
