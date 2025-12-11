@@ -5,8 +5,8 @@
   "main": "src/main.js",
   "type": "module",
   "scripts": {
-    "start": "NODE_ENV=production node src/main.js",
-    "dev": "NODE_ENV=development node src/main.js",
+    "pdinte": "NODE_ENV=production node src/main.js",
+    "devinte": "NODE_ENV=development node src/main.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "db:inspect": "node scripts/inspect-database.js"
   },
