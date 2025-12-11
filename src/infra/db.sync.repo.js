@@ -540,7 +540,7 @@ export async function processNonActiveUser(user) {
       }
 
       // Alias emails in mapped data
-      const userTypePrefix = userType === "client" ? "client" : "caregiver";
+      // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123")
       
       // Alias email field
       if (fields.email) {
@@ -549,7 +549,7 @@ export async function processNonActiveUser(user) {
         if (needsAlias && !isAliasedEmail(fields.email)) {
           const emailParts = fields.email.split("@");
           if (emailParts.length === 2) {
-            fields.email = `${emailParts[0]}+${userTypePrefix}_${mappedPayload.external_id}@${emailParts[1]}`;
+            fields.email = `${emailParts[0]}+${mappedPayload.external_id}@${emailParts[1]}`;
             logger.info(`   🔄 Aliased email field: ${emailLower} → ${fields.email}`);
           }
         }
@@ -573,7 +573,8 @@ export async function processNonActiveUser(user) {
               if (needsAlias && !isAliasedEmail(identity.value)) {
                 const emailParts = identity.value.split("@");
                 if (emailParts.length === 2) {
-                  const aliasedEmail = `${emailParts[0]}+${userTypePrefix}_${mappedPayload.external_id}@${emailParts[1]}`;
+                  // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123")
+                  const aliasedEmail = `${emailParts[0]}+${mappedPayload.external_id}@${emailParts[1]}`;
                   logger.info(`   🔄 Aliased email identity: ${identity.value} → ${aliasedEmail}`);
                   return { ...identity, value: aliasedEmail };
                 }

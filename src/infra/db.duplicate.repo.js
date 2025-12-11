@@ -279,9 +279,8 @@ function processEmailDuplicates() {
         if (primaryEmails.includes(normalizedEmail)) {
           const emailParts = newEmail.split("@");
           if (emailParts.length === 2) {
-            const userType = user.user_type || "user";
-            const prefix = userType === "client" ? "client" : "caregiver";
-            newEmail = `${emailParts[0]}+${prefix}_${user.external_id}@${emailParts[1]}`;
+            // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123")
+            newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
             emailWasAliased = true;
             logger.info(
               `   🔄 Aliasing email for user ${user.ac_id}: ${user.email} → ${newEmail}`
@@ -321,9 +320,8 @@ function processEmailDuplicates() {
           if (primaryEmails.includes(identityEmail)) {
             const emailParts = identity.value.split("@");
             if (emailParts.length === 2) {
-              const userType = user.user_type || "user";
-              const prefix = userType === "client" ? "client" : "caregiver";
-              const aliasedEmail = `${emailParts[0]}+${prefix}_${user.external_id}@${emailParts[1]}`;
+              // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123")
+              const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
               logger.info(
                 `   🔄 Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id}`
               );
