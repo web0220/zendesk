@@ -107,12 +107,12 @@ function saveMappedDataInternal(mappedData) {
 
   const existing = selectZendeskIdStmt.get(acKey);
 
-  if (existing && existing.zendesk_user_id !== null) {
-    logger.debug(
-      `🔄 Updating mapped data for already-synced user ac_id=${acKey} (updating group/tag-based fields from fresh API data: coordinator_pod, case_rating, market, etc.)`
-    );
-    // Continue to update - the SQL will preserve zendesk_user_id but update fields extracted from groups/tags
-  }
+  // if (existing && existing.zendesk_user_id !== null) {
+  //   logger.debug(
+  //     `🔄 Updating mapped data for already-synced user ac_id=${acKey} (updating group/tag-based fields from fresh API data: coordinator_pod, case_rating, market, etc.)`
+  //   );
+  //   // Continue to update - the SQL will preserve zendesk_user_id but update fields extracted from groups/tags
+  // }
 
   insertMappedDataStmt.run(
     acKey,                    // 1. ac_id
