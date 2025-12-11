@@ -83,3 +83,78 @@ export async function sendEmailNotificationForDuplicateUsers(problematicGroups) 
   }
 }
 
+/**
+ * Send email notification to Paula about primary users who changed from active to non-active
+ */
+export async function sendEmailNotificationForPrimaryStatusChange(primaryUsersWithStatusChange) {
+  if (!primaryUsersWithStatusChange || primaryUsersWithStatusChange.length === 0) {
+    return;
+  }
+
+  try {
+    // Build email content
+    const subject = `[Zendesk Sync] ${primaryUsersWithStatusChange.length} Primary User(s) Changed from Active to Non-Active`;
+    
+    let emailBody = `Dear Paula,\n\n`;
+    emailBody += `The following users have the zendesk_primary tag and have changed from active to non-active status.\n\n`;
+    emailBody += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    for (let i = 0; i < primaryUsersWithStatusChange.length; i++) {
+      const user = primaryUsersWithStatusChange[i];
+      emailBody += `User ${i + 1}:\n`;
+      emailBody += `  - Name: ${user.name || "N/A"}\n`;
+      emailBody += `    AC ID: ${user.ac_id}\n`;
+      emailBody += `    External ID: ${user.external_id || "N/A"}\n`;
+      emailBody += `    User Type: ${user.user_type || "N/A"}\n`;
+      emailBody += `    Zendesk ID: ${user.zendesk_user_id || "Not synced"}\n`;
+      emailBody += `    Email: ${user.email || "N/A"}\n`;
+      emailBody += `    Phone: ${user.phone || "N/A"}\n`;
+      emailBody += `    Previous Status: Active (changed to non-active)\n`;
+      emailBody += `\n`;
+    }
+    emailBody += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    emailBody += `\nTotal affected primary users: ${primaryUsersWithStatusChange.length}\n`;
+    emailBody += `\nBest regards,\nZendesk-AlayaCare Integration Service`;
+
+    // Try to send via AWS SES if configured
+    const awsRegion = process.env.AWS_REGION || "us-east-1";
+    const ses = new AWS.SES({ region: awsRegion });
+
+    try {
+      const params = {
+        Source: process.env.NOTIFICATION_FROM_EMAIL || "noreply@alvitacare.com",
+        Destination: {
+          ToAddresses: [PAULA_EMAIL],
+        },
+        Message: {
+          Subject: {
+            Data: subject,
+            Charset: "UTF-8",
+          },
+          Body: {
+            Text: {
+              Data: emailBody,
+              Charset: "UTF-8",
+            },
+          },
+        },
+      };
+
+      await ses.sendEmail(params).promise();
+      logger.info(`✅ Email notification sent to ${PAULA_EMAIL} about ${primaryUsersWithStatusChange.length} primary user(s) with status change`);
+    } catch (sesError) {
+      // If SES fails, log the email content so it can be sent manually
+      logger.error(`❌ Failed to send email via AWS SES: ${sesError.message}`);
+      logger.warn(`📧 Email notification content (please send manually to ${PAULA_EMAIL}):`);
+      logger.warn(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.warn(`Subject: ${subject}`);
+      logger.warn(`To: ${PAULA_EMAIL}`);
+      logger.warn(`\n${emailBody}`);
+      logger.warn(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    }
+  } catch (error) {
+    logger.error(`❌ Failed to prepare email notification: ${error.message}`);
+  }
+}
+

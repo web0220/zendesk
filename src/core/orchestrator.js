@@ -18,7 +18,7 @@ import {
   findEmailGroupsWithoutPrimary,
   processNonActiveUser,
 } from "../infra/database.js";
-import { sendEmailNotificationForDuplicateUsers } from "../services/notification/email.js";
+import { sendEmailNotificationForDuplicateUsers, sendEmailNotificationForPrimaryStatusChange } from "../services/notification/email.js";
 
 const BATCH_LIMIT = 100;
 const BATCH_CONCURRENCY = Number(process.env.ZENDESK_BATCH_CONCURRENCY) || 5;
@@ -125,6 +125,19 @@ export async function runSync() {
       logger.info(
         `📋 Found ${usersWithStatusChange.length} non-active users. Processing full data and email conflicts...`
       );
+      
+      // Check for primary users who changed from active to non-active
+      const primaryUsersWithStatusChange = usersWithStatusChange.filter(
+        (user) => user.zendesk_primary === 1 || user.zendesk_primary === true
+      );
+      
+      if (primaryUsersWithStatusChange.length > 0) {
+        logger.warn(
+          `⚠️  Found ${primaryUsersWithStatusChange.length} primary user(s) who changed from active to non-active`
+        );
+        // Send email notification for primary users with status change
+        await sendEmailNotificationForPrimaryStatusChange(primaryUsersWithStatusChange);
+      }
       
       // Process each non-active user (one by one with concurrency control)
       const processTasks = usersWithStatusChange.map((user) => async () => {
