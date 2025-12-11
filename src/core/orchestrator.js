@@ -761,15 +761,15 @@ export async function runSync() {
           companyMembers: companyMembersCreated,
         },
       },
-      updated: {
-        count: totalUpdated,
-        users: updatedUsers,
-        byType: {
-          clients: clientsUpdated,
-          caregivers: caregiversUpdated,
-          companyMembers: companyMembersUpdated,
-        },
-      },
+      // updated: {
+      //   count: totalUpdated,
+      //   users: updatedUsers,
+      //   byType: {
+      //     clients: clientsUpdated,
+      //     caregivers: caregiversUpdated,
+      //     companyMembers: companyMembersUpdated,
+      //   },
+      // },
       statusChanges: {
         count: 0,
         changes: [],

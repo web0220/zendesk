@@ -1,7 +1,74 @@
+import { logger } from "../../config/logger.js";
 import { UserEntity } from "../../domain/UserEntity.js";
 import { normalizeCaregiverRecord, normalizeClientRecord } from "./normalizer.js";
+import { findEmailsDeep } from "./identity.extractor.js";
+
+/**
+ * Check for alvitacare.com emails in client data before mapping.
+ * Alvitacare emails in invoice_email_recipients are expected and will be removed.
+ * Alvitacare emails in other fields should be reported.
+ */
+function checkAlvitacareEmailsInClient(client) {
+  const INTERNAL_DOMAINS = ["@alvitacare.com", "@alayacare.com"];
+  const clientId = client.id || client.ac_id || "unknown";
+  const clientName = client.demographics?.first_name && client.demographics?.last_name
+    ? `${client.demographics.first_name} ${client.demographics.last_name}`
+    : client.name || "unknown";
+  
+  // Helper to extract all emails from a string (handles comma-separated, space-separated, etc.)
+  const extractEmailsFromString = (str) => {
+    if (!str || typeof str !== "string") return [];
+    const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+    return str.match(emailPattern) || [];
+  };
+  
+  // Collect all invoice_email_recipients emails (expected locations)
+  const invoiceEmailsSet = new Set();
+  
+  // Check main client invoice_email_recipients
+  const mainInvoiceEmails = client.demographics?.invoice_email_recipients || client.invoice_email_recipients;
+  if (mainInvoiceEmails) {
+    extractEmailsFromString(String(mainInvoiceEmails)).forEach(email => {
+      invoiceEmailsSet.add(email.toLowerCase());
+    });
+  }
+  
+  // Check contacts' invoice_email_recipients
+  if (Array.isArray(client.contacts)) {
+    for (const contact of client.contacts) {
+      const contactInvoiceEmails = contact.demographics?.invoice_email_recipients || contact.invoice_email_recipients;
+      if (contactInvoiceEmails) {
+        extractEmailsFromString(String(contactInvoiceEmails)).forEach(email => {
+          invoiceEmailsSet.add(email.toLowerCase());
+        });
+      }
+    }
+  }
+  
+  // Find all emails in the client object
+  const allEmails = findEmailsDeep(client);
+  
+  // Check each email
+  for (const email of allEmails) {
+    const emailLower = email.toLowerCase();
+    const isInternalEmail = INTERNAL_DOMAINS.some(domain => emailLower.endsWith(domain));
+    
+    if (isInternalEmail) {
+      // If not found in invoice_email_recipients, this is unexpected and should be reported
+      if (!invoiceEmailsSet.has(emailLower)) {
+        logger.warn(
+          `⚠️  Found alvitacare.com email in unexpected field for client ${clientId} (${clientName}): ${email}. ` +
+          `This email will be removed during mapping, but please verify the source data.`
+        );
+      }
+    }
+  }
+}
 
 export function mapClientUser(rawClient) {
+  // Check for alvitacare emails in unexpected fields before mapping
+  checkAlvitacareEmailsInClient(rawClient);
+  
   const normalized = normalizeClientRecord(rawClient);
   if (!normalized) return null;
   const entity = UserEntity.fromAlayaCare(normalized);

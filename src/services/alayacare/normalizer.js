@@ -204,7 +204,8 @@ export function normalizeClientRecord(client) {
     let emailDetails = collectAllEmailDetails(client, demographics);
     let allEmailsCollected = emailDetails.map((entry) => entry.email);
     
-    // Filter internal emails only from primary email selection, but keep them for identities
+    // Filter internal emails (alvitacare.com, alayacare.com) from primary email selection
+    // Internal emails are also removed from identities (see line 255)
     let emailsForPrimary = removeInternalEmails([...allEmailsCollected]);
     let primaryEmail = emailsForPrimary.length > 0 ? emailsForPrimary[0] : null;
 
