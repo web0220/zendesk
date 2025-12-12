@@ -5,8 +5,12 @@
   "main": "src/main.js",
   "type": "module",
   "scripts": {
-    "pdinte": "NODE_ENV=production node src/main.js",
-    "devinte": "NODE_ENV=development node src/main.js",
+    "start": "NODE_ENV=production node src/main.js",
+    "dev": "NODE_ENV=development node src/main.js",
+    "recurring": "NODE_ENV=production node src/recurring.js",
+    "recurring:coordination": "NODE_ENV=production node src/recurring.js --task=coordination",
+    "recurring:concierge": "NODE_ENV=production node src/recurring.js --task=concierge",
+    "recurring:premium": "NODE_ENV=production node src/recurring.js --task=premium",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "db:inspect": "node scripts/inspect-database.js"
   },
