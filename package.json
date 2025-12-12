@@ -10,10 +10,8 @@
     "recurring": "NODE_ENV=production node src/recurring.js",
     "recurring:coordination": "NODE_ENV=production node src/recurring.js --task=coordination",
     "recurring:concierge": "NODE_ENV=production node src/recurring.js --task=concierge",
-    "recurring:premium": "NODE_ENV=production node src/recurring.js --task=premium",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "db:inspect": "node scripts/inspect-database.js"
-  },
+    "recurring:premium": "NODE_ENV=production node src/recurring.js --task=premium"
+    },
   "keywords": [],
   "author": "",
   "license": "ISC",

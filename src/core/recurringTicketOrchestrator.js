@@ -12,9 +12,10 @@ import {
   getZendeskUserData,
 } from "../services/zendesk/ticket.js";
 
-// Contact Category field ID from environment (TBD - make configurable)
+// Contact Category field ID from environment
+// Default: 44036422587803 (Coordination Contact Category field ID found via list:fields script)
 const CONTACT_CATEGORY_FIELD_ID =
-  process.env.ZENDESK_CONTACT_CATEGORY_FIELD_ID || null;
+  process.env.ZENDESK_CONTACT_CATEGORY_FIELD_ID || "44036422587803";
 
 /**
  * Task 1: Create coordination monthly check-in tickets
