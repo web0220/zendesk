@@ -232,20 +232,97 @@ export async function createPrivateTaskTicket({
 }
 
 /**
- * Create multiple tickets in batch with concurrency control
+ * Check if an error is retryable (network issues, rate limits, server errors)
+ * @param {Error} error - Error object
+ * @returns {boolean} True if error is retryable
+ */
+function isRetryableError(error) {
+  // Network errors (no response)
+  if (!error.response) {
+    return true; // Network issues are retryable
+  }
+
+  const status = error.response.status;
+  
+  // Retryable HTTP status codes
+  const retryableStatuses = [
+    429, // Rate limit
+    500, // Internal server error
+    502, // Bad gateway
+    503, // Service unavailable
+    504, // Gateway timeout
+    408, // Request timeout
+  ];
+
+  return retryableStatuses.includes(status);
+}
+
+/**
+ * Create multiple tickets in batch with concurrency control and retry logic
  * 
  * @param {Array} ticketConfigs - Array of ticket configuration objects
  * @param {number} concurrency - Maximum concurrent ticket creations
+ * @param {number} maxRetries - Maximum retry attempts for failed tickets (default: 1 additional retry)
  * @returns {Promise<Array>} Array of results (ticket objects or errors)
  */
-export async function createTicketsBatch(ticketConfigs, concurrency = 5) {
+export async function createTicketsBatch(ticketConfigs, concurrency = 5, maxRetries = 1) {
   const tasks = ticketConfigs.map((config) => async () => {
-    try {
-      const ticket = await createPrivateTaskTicket(config);
-      return { success: true, ticket, config };
-    } catch (error) {
-      return { success: false, error: error.message, config };
+    let lastError = null;
+    let attempts = 0;
+    const maxAttempts = maxRetries + 1; // Initial attempt + retries
+
+    while (attempts < maxAttempts) {
+      try {
+        const ticket = await createPrivateTaskTicket(config);
+        if (attempts > 0) {
+          logger.info(
+            `✅ Successfully created ticket for ${config.clientName} (${config.clientAcId}) after ${attempts} retry(ies)`
+          );
+        }
+        return { success: true, ticket, config, attempts: attempts + 1 };
+      } catch (error) {
+        lastError = error;
+        attempts++;
+
+        // Check if error is retryable
+        if (!isRetryableError(error)) {
+          // Non-retryable error (e.g., validation error, bad request)
+          logger.error(
+            `❌ Non-retryable error for ${config.clientName} (${config.clientAcId}): ${error.response?.status || error.message}`
+          );
+          break; // Don't retry non-retryable errors
+        }
+
+        // If we've exhausted retries, break
+        if (attempts >= maxAttempts) {
+          break;
+        }
+
+        // Wait before retry (exponential backoff)
+        const waitTime = Math.min(1000 * Math.pow(2, attempts - 1), 10000); // Max 10 seconds
+        logger.warn(
+          `⚠️ Retrying ticket creation for ${config.clientName} (${config.clientAcId}) - attempt ${attempts + 1}/${maxAttempts} after ${waitTime}ms`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
     }
+
+    // All retries exhausted or non-retryable error
+    const errorMsg = lastError?.response?.data 
+      ? JSON.stringify(lastError.response.data)
+      : lastError?.message || "Unknown error";
+    
+    logger.error(
+      `❌ Failed to create ticket for ${config.clientName} (${config.clientAcId}) after ${attempts} attempt(s): ${errorMsg}`
+    );
+
+    return {
+      success: false,
+      error: errorMsg,
+      config,
+      attempts,
+      retryable: isRetryableError(lastError),
+    };
   });
 
   const results = await runWithLimit(tasks, concurrency);
