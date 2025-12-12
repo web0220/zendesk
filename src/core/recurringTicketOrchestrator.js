@@ -72,6 +72,7 @@ async function createCoordinationMonthlyTickets() {
       contactCategoryFieldId: CONTACT_CATEGORY_FIELD_ID,
       clientName: client.name,
       clientAcId: client.ac_id,
+      commentBody: "monthly coordination client check-in",
     });
   }
 
@@ -172,6 +173,7 @@ async function createClinicalWeeklyConciergeTickets() {
       contactCategoryFieldId: CONTACT_CATEGORY_FIELD_ID,
       clientName: client.name,
       clientAcId: client.ac_id,
+      commentBody: "weekly clinical concierge client check-in",
     });
   }
 
@@ -274,6 +276,7 @@ async function createClinicalMonthlyPremiumTickets() {
       contactCategoryFieldId: CONTACT_CATEGORY_FIELD_ID,
       clientName: client.name,
       clientAcId: client.ac_id,
+      commentBody: "monthly clinical premium client check-in",
     });
   }
 

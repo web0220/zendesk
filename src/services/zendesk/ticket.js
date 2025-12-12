@@ -169,6 +169,7 @@ export async function createPrivateTaskTicket({
   dueAt,
   contactCategoryValue = null,
   contactCategoryFieldId = null,
+  commentBody = "Automated recurring check-in ticket",
 }) {
   if (!requesterId || !subject || !dueAt) {
     logger.error("❌ Missing required fields for ticket creation");
@@ -194,7 +195,7 @@ export async function createPrivateTaskTicket({
         requester_id: requesterId,
         due_at: dueAt,
         comment: {
-          body: "Automated recurring check-in ticket",
+          body: commentBody,
           public: false, // Private comment
         },
       },
