@@ -4,33 +4,152 @@ import { zendeskLimiter } from "../../utils/limiter.js";
 import { runWithLimit } from "../../utils/rateLimiter.js";
 
 /**
- * Calculate the last day of the current month in ISO 8601 format
- * @returns {string} ISO 8601 date string (e.g., "2025-12-31T23:59:59Z")
+ * Get current date components in EST timezone
+ * @returns {Object} Object with year, month (0-indexed), day
  */
-export function getLastDayOfMonth() {
+function getCurrentDateInEST() {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  // Get last day of current month
-  const lastDay = new Date(year, month + 1, 0);
-  // Set to end of day (23:59:59)
-  lastDay.setHours(23, 59, 59, 999);
-  return lastDay.toISOString();
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  
+  const parts = formatter.formatToParts(now);
+  return {
+    year: parseInt(parts.find((p) => p.type === "year").value),
+    month: parseInt(parts.find((p) => p.type === "month").value) - 1, // 0-indexed
+    day: parseInt(parts.find((p) => p.type === "day").value),
+  };
 }
 
 /**
- * Calculate the Friday of the current week in ISO 8601 format
- * @returns {string} ISO 8601 date string (e.g., "2025-12-12T23:59:59Z")
+ * Get the UTC offset for a specific date in America/New_York timezone
+ * Returns offset in minutes (EST = -300, EDT = -240)
+ * @param {Date} date - Date to check
+ * @returns {number} Offset in minutes
+ */
+function getESTOffsetMinutes(date) {
+  // Create two formatters: one for EST and one for UTC
+  const estFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    timeZoneName: "short",
+  });
+  
+  const utcFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    timeZoneName: "short",
+  });
+  
+  // Get the time in EST and UTC for the same moment
+  const estParts = estFormatter.formatToParts(date);
+  const utcParts = utcFormatter.formatToParts(date);
+  
+  // Calculate the difference
+  // This is a bit complex, so let's use a simpler approach:
+  // Format the date in EST, then create a date from that string and compare to UTC
+  const estDateStr = estFormatter.format(date);
+  const utcDateStr = utcFormatter.format(date);
+  
+  // Actually, simpler: create a date string in EST format and parse it
+  // EST is UTC-5 (300 minutes) or EDT is UTC-4 (240 minutes)
+  // We can determine which by checking what timezone abbreviation is used
+  const tzName = estParts.find((p) => p.type === "timeZoneName")?.value || "";
+  return tzName.includes("EDT") ? -240 : -300; // EDT = UTC-4, EST = UTC-5
+}
+
+/**
+ * Convert EST date/time to UTC ISO string
+ * @param {number} year - Year in EST
+ * @param {number} month - Month (0-indexed) in EST
+ * @param {number} day - Day in EST
+ * @param {number} hour - Hour (0-23) in EST
+ * @param {number} minute - Minute in EST
+ * @param {number} second - Second in EST
+ * @param {number} millisecond - Millisecond in EST
+ * @returns {string} ISO 8601 UTC string
+ */
+function convertESTToUTC(year, month, day, hour, minute, second, millisecond = 0) {
+  // Create date string in ISO format
+  const dateString = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}.${String(millisecond).padStart(3, "0")}`;
+  
+  // First, try with EST offset (UTC-5)
+  let testDate = new Date(`${dateString}-05:00`);
+  
+  // Check if this date, when formatted back in EST, matches our input
+  // This verifies we used the correct offset
+  const estFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  
+  const estParts = estFormatter.formatToParts(testDate);
+  const formattedYear = parseInt(estParts.find((p) => p.type === "year").value);
+  const formattedMonth = parseInt(estParts.find((p) => p.type === "month").value) - 1;
+  const formattedDay = parseInt(estParts.find((p) => p.type === "day").value);
+  const formattedHour = parseInt(estParts.find((p) => p.type === "hour").value);
+  
+  // If formatted date matches input, we have correct offset
+  if (formattedYear === year && formattedMonth === month && formattedDay === day && formattedHour === hour) {
+    return testDate.toISOString();
+  }
+  
+  // Otherwise, try EDT (UTC-4)
+  testDate = new Date(`${dateString}-04:00`);
+  return testDate.toISOString();
+}
+
+/**
+ * Calculate the last day of the current month in EST, then convert to UTC
+ * @returns {string} ISO 8601 date string in UTC (e.g., "2026-01-01T04:59:59.999Z" for Dec 31 11:59:59 PM EST)
+ */
+export function getLastDayOfMonth() {
+  const estNow = getCurrentDateInEST();
+  const year = estNow.year;
+  const month = estNow.month;
+  
+  // Get last day of current month
+  // Create a date for the first day of next month, then subtract 1 day
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  
+  // Return UTC ISO string for last day of month at 23:59:59.999 EST
+  return convertESTToUTC(year, month, lastDay, 23, 59, 59, 999);
+}
+
+/**
+ * Calculate the Friday of the current week in EST, then convert to UTC
+ * @returns {string} ISO 8601 date string in UTC
  */
 export function getFridayOfCurrentWeek() {
-  const now = new Date();
-  const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ..., 5 = Friday, 6 = Saturday
-  const daysUntilFriday = (5 - dayOfWeek + 7) % 7; // Calculate days until Friday
-  const friday = new Date(now);
-  friday.setDate(now.getDate() + daysUntilFriday);
-  // Set to end of day (23:59:59)
-  friday.setHours(23, 59, 59, 999);
-  return friday.toISOString();
+  const estNow = getCurrentDateInEST();
+  
+  // Create a date object for current EST time to get day of week
+  // We'll use a temporary date to calculate day of week
+  const tempDate = new Date(estNow.year, estNow.month, estNow.day);
+  const dayOfWeek = tempDate.getDay(); // 0 = Sunday, 5 = Friday
+  
+  // Calculate days until Friday
+  const daysUntilFriday = (5 - dayOfWeek + 7) % 7;
+  
+  // Calculate Friday date
+  const fridayDate = new Date(estNow.year, estNow.month, estNow.day + daysUntilFriday);
+  
+  // Return UTC ISO string for Friday at 23:59:59.999 EST
+  return convertESTToUTC(
+    fridayDate.getFullYear(),
+    fridayDate.getMonth(),
+    fridayDate.getDate(),
+    23,
+    59,
+    59,
+    999
+  );
 }
 
 /**
@@ -71,7 +190,7 @@ export async function createPrivateTaskTicket({
         subject,
         type: "task",
         priority: "normal",
-        status: "open",
+        status: "new",
         requester_id: requesterId,
         due_at: dueAt,
         comment: {
