@@ -485,7 +485,13 @@ function processPhoneDuplicates() {
     );
   }
 
-  return problematicPhoneGroups;
+  // Return array of users (not groups) that need to be excluded from sync
+  const usersNeedingPrimary = [];
+  for (const group of problematicPhoneGroups) {
+    usersNeedingPrimary.push(...group.users);
+  }
+
+  return usersNeedingPrimary;
 }
 
 
@@ -944,14 +950,25 @@ export function processDuplicateEmailsAndPhones() {
   logger.info("🔍 Processing duplicate emails...");
 
   // Step 1: Process email duplicates (most important - avoid email conflicts)
-  const usersNeedingPrimary = processEmailDuplicates();
+  const emailUsersNeedingPrimary = processEmailDuplicates();
 
-  // Step 2: Process phone duplicates (COMMENTED OUT - will be considered later)
-  // Zendesk will handle duplicate phone numbers as shared phone number automatically
-  // processPhoneDuplicates();
-
-  logger.info("✅ Finished processing email duplicates");
+  // Step 2: Process phone duplicates
+  const phoneUsersNeedingPrimary = processPhoneDuplicates();
   
-  return usersNeedingPrimary || [];
+  if (phoneUsersNeedingPrimary.length > 0) {
+    logger.error(`❌ Found ${phoneUsersNeedingPrimary.length} user(s) in phone groups without zendesk_primary tag`);
+  }
+
+  logger.info("✅ Finished processing email and phone duplicates");
+  
+  // Combine users from both email and phone groups that need primary tag
+  const allUsersNeedingPrimary = [...(emailUsersNeedingPrimary || []), ...(phoneUsersNeedingPrimary || [])];
+  
+  // Remove duplicates (in case a user is in both an email group and phone group without primary)
+  const uniqueUsersNeedingPrimary = Array.from(
+    new Map(allUsersNeedingPrimary.map(u => [u.ac_id, u])).values()
+  );
+  
+  return uniqueUsersNeedingPrimary;
 }
 

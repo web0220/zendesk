@@ -111,7 +111,7 @@ export async function runSync() {
     logger.info("✅ Finished processing email duplicates");
     
     if (usersNeedingPrimary.length > 0) {
-      logger.error(`❌ Found ${usersNeedingPrimary.length} user(s) in email groups without zendesk_primary tag`);
+      logger.error(`❌ Found ${usersNeedingPrimary.length} user(s) in email/phone groups without zendesk_primary tag`);
       logger.error(`   These users will be excluded from Zendesk sync`);
     }
 
@@ -224,6 +224,8 @@ export async function runSync() {
     const problematicGroups = findEmailGroupsWithoutPrimary();
     
     let usersToExclude = new Set();
+    
+    // Add users from email groups without primary
     if (problematicGroups.length > 0) {
       logger.warn(
         `⚠️  Found ${problematicGroups.length} email group(s) with 2+ users and no zendesk_primary tag`
@@ -243,6 +245,16 @@ export async function runSync() {
       await sendEmailNotificationForDuplicateUsers(problematicGroups);
     } else {
       logger.info("✅ No problematic email groups found (all groups have zendesk_primary tag or < 2 users)");
+    }
+    
+    // Also exclude users from phone groups without primary (from Phase 2 processing)
+    if (usersNeedingPrimary.length > 0) {
+      for (const user of usersNeedingPrimary) {
+        usersToExclude.add(user.ac_id);
+        logger.warn(
+          `   ❌ Excluding user ${user.ac_id} (${user.name}): no zendesk_primary tag in email/phone group`
+        );
+      }
     }
     
     // Filter out users in problematic groups

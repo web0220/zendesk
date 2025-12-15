@@ -70,12 +70,21 @@ export class UserEntity {
   }
 
   toZendeskPayload() {
+    // For non-primary users with shared_phone_number, filter out phone identities
+    // Phone numbers should only be in shared_phone_number field, not in identities
+    let identities = this.identities.slice();
+    if (!this.zendeskPrimary && this.sharedPhoneNumber) {
+      identities = identities.filter(
+        (identity) => identity.type !== "phone" && identity.type !== "phone_number"
+      );
+    }
+    
     const payload = {
       external_id: this.externalId,
       ac_id: this.acId,
       name: this.name,
       organization_id: this.organizationId || undefined,
-      identities: this.identities.slice(),
+      identities,
       zendesk_primary: this.zendeskPrimary,
       user_fields: {
         ...this.userFields,

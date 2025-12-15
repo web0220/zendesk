@@ -167,6 +167,15 @@ export function convertDatabaseRowToZendeskUser(row) {
       }
     }
   }
+  
+  // For non-primary users with shared_phone_number, filter out phone identities
+  // Phone numbers should only be in shared_phone_number field, not in identities
+  const isPrimary = row.zendesk_primary === 1 || row.zendesk_primary === true;
+  if (!isPrimary && row.shared_phone_number) {
+    identities = identities.filter(
+      (identity) => identity.type !== "phone" && identity.type !== "phone_number"
+    );
+  }
 
   const zendeskUser = {
     external_id: row.external_id,
