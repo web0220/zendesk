@@ -2,8 +2,6 @@
 import axios from "axios";
 import { zendeskLimiter } from "../src/utils/limiter.js";
 import { logger } from "../src/config/logger.js";
-import Database from "better-sqlite3";
-import path from "path";
 
 const ZENDESK_SUBDOMAIN = "alvitacare";
 const ZENDESK_EMAIL = "paula.cheng@alvitacare.com";
@@ -136,22 +134,27 @@ async function waitForJob(jobId) {
 // -------------------------------
 // 4. Get zendesk_user_ids from external_ids
 // -------------------------------
-function getZendeskUserIdsFromExternalIds(externalIds) {
-  const dbPath = path.resolve("logs", "sync.db");
-  const db = new Database(dbPath);
+async function getZendeskUserIdsFromExternalIds(externalIds) {
+  const userIds = [];
   
-  try {
-    const placeholders = externalIds.map(() => "?").join(",");
-    const query = `SELECT zendesk_user_id FROM user_mappings WHERE external_id IN (${placeholders}) AND zendesk_user_id IS NOT NULL`;
-    
-    const rows = db.prepare(query).all(...externalIds);
-    const userIds = rows.map(row => row.zendesk_user_id).filter(id => id !== null);
-    
-    logger.info(`Found ${userIds.length} zendesk_user_ids for ${externalIds.length} external_ids`);
-    return userIds;
-  } finally {
-    db.close();
+  for (const externalId of externalIds) {
+    try {
+      const query = `external_id:${externalId}`;
+      const res = await zendeskLimiter.schedule(() => zendesk.get(`/users/search.json?query=${encodeURIComponent(query)}`));
+      
+      if (res.data.users && res.data.users.length > 0) {
+        const user = res.data.users[0];
+        if (user.id) {
+          userIds.push(user.id);
+        }
+      }
+    } catch (err) {
+      logger.warn(`Failed to find user with external_id ${externalId}:`, err.response?.data || err.message);
+    }
   }
+  
+  logger.info(`Found ${userIds.length} zendesk_user_ids for ${externalIds.length} external_ids`);
+  return userIds;
 }
 
 // -------------------------------
@@ -177,7 +180,7 @@ async function main() {
     // Step 2: Delete alvita members (except paula and kennedy)
     if (ALVITA_MEMBER_EXTERNAL_IDS_TO_DELETE.length > 0) {
       logger.info(`Looking up zendesk_user_ids for ${ALVITA_MEMBER_EXTERNAL_IDS_TO_DELETE.length} alvita member external_ids...`);
-      const alvitaMemberUserIds = getZendeskUserIdsFromExternalIds(ALVITA_MEMBER_EXTERNAL_IDS_TO_DELETE);
+      const alvitaMemberUserIds = await getZendeskUserIdsFromExternalIds(ALVITA_MEMBER_EXTERNAL_IDS_TO_DELETE);
       
       if (alvitaMemberUserIds.length > 0) {
         logger.info(`Deleting ${alvitaMemberUserIds.length} alvita member users (excluding paula and kennedy)...`);
