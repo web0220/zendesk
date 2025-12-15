@@ -359,30 +359,32 @@ function processEmailDuplicates() {
 }
 
 /**
- * Process phone duplicates: find users with same phone numbers and move to shared_phone_number.
- * This is the SECOND step and only handles phones, not emails.
- * 
- * NOTE: Currently commented out per business requirements - phone duplicate logic will be considered later.
- * Zendesk will handle duplicate phone numbers as shared phone number automatically.
+ * Process phone duplicates for ACTIVE users.
+ *
+ * Rules:
+ * - Primary user (zendesk_primary = 1) keeps phone numbers in `phone` + phone identities,
+ *   and must have `shared_phone_number = NULL`.
+ * - Non-primary users move all their phone numbers into `shared_phone_number`
+ *   and remove them from `phone` + phone identities (using movePhoneToShared).
+ *
+ * If a phone group has no zendesk_primary user, we log an error and skip that group
+ * (so we don't make an arbitrary choice). These groups can be surfaced via logs / email.
  */
-// Phone duplicate processing is commented out per business requirements
-// Zendesk will handle duplicate phone numbers as shared phone number automatically
-/*
 function processPhoneDuplicates() {
   const db = getDb();
-  logger.info("📞 Step 2: Processing duplicate phone numbers...");
+  logger.info("📞 Processing duplicate phone numbers for active users...");
 
   // Get all ACTIVE users (current_active = 1)
-  // Non-active users don't need processing because their data won't be overwritten (we only fetch active users)
   const allUsers = db
     .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
     .all()
     .map(hydrateMapping);
-  logger.info(`📊 Found ${allUsers.length} active users in database (processing all, regardless of sync status)`);
+
+  logger.info(`📊 Found ${allUsers.length} active users in database (for phone duplicate processing)`);
 
   if (allUsers.length === 0) {
     logger.info("✅ No users found, skipping phone duplicate processing");
-    return;
+    return [];
   }
 
   // Build phone index: phone -> [users who have this phone]
@@ -391,6 +393,7 @@ function processPhoneDuplicates() {
   for (const user of allUsers) {
     const userPhones = extractAllPhoneNumbers(user);
     for (const phone of userPhones) {
+      if (!phone) continue;
       if (!phoneIndex.has(phone)) {
         phoneIndex.set(phone, []);
       }
@@ -398,50 +401,42 @@ function processPhoneDuplicates() {
     }
   }
 
-  // Find phone groups (users who share the same phone)
-  const phoneGroups = Array.from(phoneIndex.entries()).filter(([phone, users]) => users.length > 1);
+  // Groups that share the same phone (size >= 2)
+  const phoneGroups = Array.from(phoneIndex.entries()).filter(([, users]) => users.length > 1);
 
   if (phoneGroups.length === 0) {
     logger.info("✅ No phone duplicate groups found");
-    return;
+    return [];
   }
 
   let processedCount = 0;
   const processedUserIds = new Set();
+  const problematicPhoneGroups = [];
 
-  // Process each phone group
   for (const [phone, phoneGroup] of phoneGroups) {
-    // Process all active users in the group (regardless of sync status)
-
     // Select primary user for this phone group (prefer zendesk_primary)
-    const primaryTagged = phoneGroup.find((u) => u.zendesk_primary === 1 || u.zendesk_primary === true);
-    let primaryUser;
-    
-    if (primaryTagged) {
-      primaryUser = primaryTagged;
-    } else {
-      // Log warning if no zendesk_primary user found
-      const userList = phoneGroup.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ");
-      logger.warn(
-        `⚠️  No zendesk_primary user found in phone group (phone=${phone}). Users: ${userList}. Selecting fallback primary.`
+    const primaryUser = phoneGroup.find(
+      (u) => u.zendesk_primary === 1 || u.zendesk_primary === true
+    );
+
+    if (!primaryUser) {
+      const userList = phoneGroup
+        .map((u) => `${u.ac_id} (${u.name || u.external_id})`)
+        .join(", ");
+      logger.error(
+        `❌ ERROR: No zendesk_primary user found in phone group (phone=${phone}). Users: ${userList}`
       );
-      
-      // Fallback: prefer already synced users, then first user
-      const synced = phoneGroup.filter((u) => u.zendesk_user_id != null);
-      if (synced.length > 0) {
-        primaryUser = synced[0];
-        logger.info(`   Selected already-synced user as primary: ${primaryUser.ac_id}`);
-      } else {
-        primaryUser = phoneGroup[0];
-        logger.info(`   Selected first user as primary: ${primaryUser.ac_id}`);
-      }
+      problematicPhoneGroups.push({ phone, users: phoneGroup });
+      continue;
     }
-    
+
     const duplicateUsers = phoneGroup.filter((u) => u.ac_id !== primaryUser.ac_id);
 
-    // Skip if already processed
+    // Skip if already processed this primary (to avoid double work)
     if (processedUserIds.has(primaryUser.ac_id)) {
-      logger.debug(`⏭️  Skipping phone group (already processed): primary=${primaryUser.ac_id}`);
+      logger.debug(
+        `⏭️  Skipping phone group (already processed primary): primary=${primaryUser.ac_id}`
+      );
       continue;
     }
 
@@ -449,70 +444,49 @@ function processPhoneDuplicates() {
       `   Processing phone group: phone=${phone}, primary=${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id}), ${duplicateUsers.length} duplicate(s)`
     );
 
-    // Process each duplicate user in the phone group (including primary)
-    for (const duplicateUser of duplicateUsers) {
-
-      // Get THIS USER'S phone numbers (not all phones from the group)
-      const duplicateUserPhones = extractAllPhoneNumbers(duplicateUser);
-      const sharedPhoneNumberStr = duplicateUserPhones.length > 0 ? duplicateUserPhones.join("\n") : null;
-
-      // Filter identities: remove phone identities (they'll be in shared_phone_number)
-      let identities = duplicateUser.identities;
-      if (typeof identities === "string") {
-        try {
-          identities = JSON.parse(identities);
-        } catch {
-          identities = [];
-        }
-      }
-      if (!Array.isArray(identities)) {
-        identities = [];
-      }
-
-      const filteredIdentities = identities.filter((identity) => {
-        // Remove all phone identities (they'll be in shared_phone_number)
-        if (identity.type === "phone" || identity.type === "phone_number") {
-          return false;
-        }
-        return true;
-      });
-
-      // Update duplicate user: move THIS USER'S phones to shared_phone_number, remove phone from identities
-      const updateStmt = db.prepare(`
-        UPDATE user_mappings
-        SET phone = NULL,
-            identities = ?,
-            shared_phone_number = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE ac_id = ?
-      `);
-
-      const phoneCount = duplicateUserPhones.length;
-      updateStmt.run(JSON.stringify(filteredIdentities), sharedPhoneNumberStr, duplicateUser.ac_id);
-      logger.debug(
-        `   Updated duplicate user ${duplicateUser.ac_id}: moved ${phoneCount} phone(s) to shared_phone_number: ${duplicateUserPhones.join(", ")}`
+    // Ensure primary user has phones in phone/identities and no shared_phone_number
+    try {
+      movePhoneFromShared(primaryUser);
+    } catch (error) {
+      logger.warn(
+        `⚠️  Failed to normalize phones for primary user ${primaryUser.ac_id}: ${error.message}`
       );
-      processedCount++;
-      processedUserIds.add(duplicateUser.ac_id);
     }
 
-    // Ensure primary user has shared_phone_number set to NULL
-    // (Primary keeps their phone in the phone field, not shared_phone_number)
-    const updatePrimaryStmt = db.prepare(`
-      UPDATE user_mappings
-      SET shared_phone_number = NULL,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE ac_id = ?
-    `);
+    // For each non-primary user, move phones to shared_phone_number
+    for (const duplicateUser of duplicateUsers) {
+      try {
+        const { sharedPhoneNumberStr } = movePhoneToShared(duplicateUser);
+        const phoneCount = sharedPhoneNumberStr
+          ? sharedPhoneNumberStr.split("\n").filter((p) => p.trim()).length
+          : 0;
+        logger.debug(
+          `   Updated non-primary user ${duplicateUser.ac_id}: moved ${phoneCount} phone(s) to shared_phone_number`
+        );
+        processedCount++;
+        processedUserIds.add(duplicateUser.ac_id);
+      } catch (error) {
+        logger.error(
+          `❌ Failed to move phones to shared_phone_number for user ${duplicateUser.ac_id}: ${error.message}`
+        );
+      }
+    }
 
-    updatePrimaryStmt.run(primaryUser.ac_id);
-    logger.debug(`   Updated primary user ${primaryUser.ac_id}: set shared_phone_number to NULL`);
     processedUserIds.add(primaryUser.ac_id);
   }
 
-  logger.info(`✅ Processed ${processedCount} duplicate users in ${phoneGroups.length} phone group(s)`);
+  logger.info(
+    `✅ Processed ${processedCount} non-primary users in ${phoneGroups.length} phone group(s)`
+  );
+
+  if (problematicPhoneGroups.length > 0) {
+    logger.error(
+      `❌ Found ${problematicPhoneGroups.length} phone group(s) with 2+ users and no zendesk_primary tag`
+    );
+  }
+
+  return problematicPhoneGroups;
 }
-*/
 
 
 /**
@@ -980,3 +954,4 @@ export function processDuplicateEmailsAndPhones() {
   
   return usersNeedingPrimary || [];
 }
+
