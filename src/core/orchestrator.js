@@ -74,6 +74,13 @@ function hydrateEntitiesFromDb(rows) {
 }
 
 export async function runSync() {
+  // Track alerts that occurred during sync
+  const alerts = {
+    duplicateEmailGroups: [],
+    duplicatePhoneGroups: [],
+    primaryUsersDeactivated: [],
+  };
+
   try {
     resetCurrentActiveFlag();
 
@@ -138,7 +145,9 @@ export async function runSync() {
         logger.warn(
           `⚠️  Found ${primaryUsersWithStatusChange.length} primary user(s) who changed from active to non-active`
         );
-        // Send email notification for primary users with status change
+        // Store alert for job completion email
+        alerts.primaryUsersDeactivated = primaryUsersWithStatusChange;
+        // Still send immediate email notification for primary users with status change
         await sendEmailNotificationForPrimaryStatusChange(primaryUsersWithStatusChange);
       }
       
@@ -269,7 +278,9 @@ export async function runSync() {
         }
       }
       
-      // Send email notification to Paula
+      // Store alert for job completion email
+      alerts.duplicatePhoneGroups = problematicPhoneGroups;
+      // Still send immediate email notification to Paula
       await sendEmailNotificationForDuplicatePhoneUsers(problematicPhoneGroups);
     } else {
       logger.info("✅ No problematic phone groups found (all groups have zendesk_primary tag or < 2 users)");
@@ -327,6 +338,7 @@ export async function runSync() {
         mappingsStored: 0,
         identitiesSynced: 0,
         statusUpdatesProcessed: usersWithStatusChange.length,
+        alerts: alerts,
         newlyCreated: {
           count: 0,
           users: [],
@@ -799,6 +811,8 @@ export async function runSync() {
       mappingsStored: totalMappingsUpdated,
       identitiesSynced: totalIdentitiesSynced,
       statusUpdatesProcessed: usersWithStatusChange.length,
+      // Alerts that occurred during sync
+      alerts: alerts,
       // New detailed information
       newlyCreated: {
         count: totalCreated,
@@ -809,15 +823,15 @@ export async function runSync() {
           companyMembers: companyMembersCreated,
         },
       },
-      // updated: {
-      //   count: totalUpdated,
-      //   users: updatedUsers,
-      //   byType: {
-      //     clients: clientsUpdated,
-      //     caregivers: caregiversUpdated,
-      //     companyMembers: companyMembersUpdated,
-      //   },
-      // },
+      updated: {
+        count: totalUpdated,
+        users: updatedUsers,
+        byType: {
+          clients: clientsUpdated,
+          caregivers: caregiversUpdated,
+          companyMembers: companyMembersUpdated,
+        },
+      },
       statusChanges: {
         count: 0,
         changes: [],
