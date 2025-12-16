@@ -21,5 +21,6 @@ export {
   processDuplicateEmailsAndPhones,
   processNonActiveUserEmailSwaps,
   findEmailGroupsWithoutPrimary,
+  findPhoneGroupsWithoutPrimary,
 } from "./db.duplicate.repo.js";
 export { convertDatabaseRowToZendeskUser } from "../domain/user.db.mapper.js";

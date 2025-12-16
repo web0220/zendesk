@@ -3,7 +3,7 @@ import { fetchClients, fetchCaregivers } from "../services/alayacare/fetch.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
 import { bulkUpsertUsers, updateUser } from "../services/zendesk/upsert.js";
 import { syncUserIdentities } from "../services/zendesk/identitySync.js";
-import { getUserIdentities, deleteUserIdentity } from "../services/zendesk/zendesk.api.js";
+import { getUserIdentities, deleteUserIdentity, getUser } from "../services/zendesk/zendesk.api.js";
 import { isAliasedEmail } from "../infra/db.duplicate.repo.js";
 import { UserEntity } from "../domain/UserEntity.js";
 import { chunkArray, runWithLimit } from "../utils/rateLimiter.js";
@@ -16,9 +16,12 @@ import {
   getUsersWithStatusChange,
   getAllUsersForSync,
   findEmailGroupsWithoutPrimary,
+  findPhoneGroupsWithoutPrimary,
   processNonActiveUser,
 } from "../infra/database.js";
-import { sendEmailNotificationForDuplicateUsers, sendEmailNotificationForPrimaryStatusChange } from "../services/notification/email.js";
+import { sendEmailNotificationForDuplicateUsers, sendEmailNotificationForDuplicatePhoneUsers, sendEmailNotificationForPrimaryStatusChange } from "../services/notification/email.js";
+import { getDb } from "../infra/db.api.js";
+import { hydrateMapping } from "../domain/user.db.mapper.js";
 
 const BATCH_LIMIT = 100;
 const BATCH_CONCURRENCY = Number(process.env.ZENDESK_BATCH_CONCURRENCY) || 5;
@@ -247,6 +250,31 @@ export async function runSync() {
       logger.info("✅ No problematic email groups found (all groups have zendesk_primary tag or < 2 users)");
     }
     
+    // Check for phone groups with 2+ users and no zendesk_primary tag
+    logger.info("🔍 Checking for phone groups without zendesk_primary tag...");
+    const problematicPhoneGroups = findPhoneGroupsWithoutPrimary();
+    
+    if (problematicPhoneGroups.length > 0) {
+      logger.warn(
+        `⚠️  Found ${problematicPhoneGroups.length} phone group(s) with 2+ users and no zendesk_primary tag`
+      );
+      
+      // Collect all user IDs to exclude
+      for (const group of problematicPhoneGroups) {
+        for (const user of group.users) {
+          usersToExclude.add(user.ac_id);
+          logger.warn(
+            `   ❌ Excluding user ${user.ac_id} (${user.name}): phone "${group.phone}" - no zendesk_primary tag in group`
+          );
+        }
+      }
+      
+      // Send email notification to Paula
+      await sendEmailNotificationForDuplicatePhoneUsers(problematicPhoneGroups);
+    } else {
+      logger.info("✅ No problematic phone groups found (all groups have zendesk_primary tag or < 2 users)");
+    }
+    
     // Also exclude users from phone groups without primary (from Phase 2 processing)
     if (usersNeedingPrimary.length > 0) {
       for (const user of usersNeedingPrimary) {
@@ -341,9 +369,10 @@ export async function runSync() {
       };
     }
 
-    // Phase 4: Separate primary users from non-primary users
-    logger.info("🔧 Phase 4: Separating primary and non-primary users for Zendesk sync...");
+    // Phase 4: Sync ALL active users first (primary + non-primary together)
+    logger.info("🔧 Phase 4: Syncing all active users to Zendesk...");
     
+    // Separate primary users for later alias cleaning, but include them in sync
     const primaryUsers = usersToSync.filter((u) => u.zendesk_primary === 1 || u.zendesk_primary === true);
     const nonPrimaryUsers = usersToSync.filter((u) => !u.zendesk_primary || u.zendesk_primary === 0 || u.zendesk_primary === false);
     
@@ -357,8 +386,10 @@ export async function runSync() {
       logger.warn(`   ⚠️  Excluding ${excludedFromPrimaryTag} non-primary user(s) due to missing zendesk_primary tag in email groups`);
     }
     
-    const zendeskUsers = hydrateEntitiesFromDb(nonPrimaryUsersToSync);
-    logger.info(`📦 Converted ${zendeskUsers.length} non-primary database records into Zendesk payloads`);
+    // Sync ALL users together (primary + non-primary) - they all need to be synced first
+    const allUsersToSyncNow = [...primaryUsers, ...nonPrimaryUsersToSync];
+    const zendeskUsers = hydrateEntitiesFromDb(allUsersToSyncNow);
+    logger.info(`📦 Converted ${zendeskUsers.length} database records into Zendesk payloads (includes ${primaryUsers.length} primary + ${nonPrimaryUsersToSync.length} non-primary)`);
     
     // Debug: Log status values being sent to Zendesk
     const usersWithStatus = zendeskUsers.filter((u) => {
@@ -614,100 +645,92 @@ export async function runSync() {
     });
 
     const results = await runWithLimit(tasks, BATCH_CONCURRENCY);
-    logger.info("✅ All non-primary batches submitted and confirmed successfully.");
+    logger.info("✅ All batches submitted and confirmed successfully.");
     
-    // Process primary users one by one
+    // Phase 4b: After all users are synced, clean aliases for primary users who exist
+    // This step only runs for primary users who already exist in Zendesk
+    // Reason: Primary users should have unaliased emails. If they were previously non-primary,
+    // they might have aliased email identities in Zendesk that need to be removed.
     if (primaryUsers.length > 0) {
-      logger.info(`🔑 Processing ${primaryUsers.length} primary user(s) one by one...`);
+      logger.info(`🔑 Phase 4b: Cleaning aliases for ${primaryUsers.length} primary user(s) (only for users that exist in Zendesk)...`);
       
-      const primaryUserTasks = primaryUsers.map((user) => async () => {
-        try {
-          const zendeskPayload = UserEntity.fromDbRow(user)?.toZendeskPayload();
-          if (!zendeskPayload) {
-            logger.warn(`⚠️  Failed to convert primary user ${user.ac_id} to Zendesk payload`);
-            return { success: false, userId: null, isNew: false };
-          }
-          
-          // If new user (no zendesk_user_id), use batch upsert
-          if (!user.zendesk_user_id) {
-            logger.info(`   ➕ Primary user ${user.ac_id} is new - using batch upsert`);
-            const result = await bulkUpsertUsers([zendeskPayload]);
-            const jobResults = result?.job_status?.results || [];
-            if (jobResults.length > 0 && jobResults[0].id) {
-              const zendeskUserId = jobResults[0].id;
-              updateZendeskUserId(user.ac_id, zendeskUserId);
-              
-              // Sync identities
-              if (zendeskPayload.identities && Array.isArray(zendeskPayload.identities)) {
-                await syncUserIdentities(zendeskUserId, { identities: zendeskPayload.identities });
-              }
-              
-              totalCreated++;
-              if (user.user_type === "client") {
-                clientsCreated++;
-              } else if (user.user_type === "caregiver") {
-                caregiversCreated++;
-              }
-              return { success: true, userId: zendeskUserId, isNew: true };
+      // Reload primary users from database to get updated zendesk_user_id after batch sync
+      const db = getDb();
+      const primaryUserAcIds = primaryUsers.map(u => u.ac_id);
+      const placeholders = primaryUserAcIds.map(() => '?').join(',');
+      const reloadedPrimaryUsers = db
+        .prepare(`SELECT * FROM user_mappings WHERE ac_id IN (${placeholders})`)
+        .all(...primaryUserAcIds)
+        .map(hydrateMapping);
+      
+      const primaryUserTasks = reloadedPrimaryUsers
+        .filter((user) => user.zendesk_user_id) // Only process users that have zendesk_user_id (were synced)
+        .map((user) => async () => {
+          try {
+            // Verify user exists in Zendesk
+            const zendeskUser = await getUser(user.zendesk_user_id);
+            if (!zendeskUser) {
+              logger.debug(`   ⏭️  Primary user ${user.ac_id} not found in Zendesk, skipping alias cleanup`);
+              return { success: true, userId: user.zendesk_user_id, cleaned: false };
             }
-            return { success: false, userId: null, isNew: true };
-          }
-          
-          // Existing user: GET identities, find aliased emails, DELETE them, then sync
-          logger.info(`   🔄 Primary user ${user.ac_id} (Zendesk ID: ${user.zendesk_user_id}) is existing - cleaning aliases`);
-          
-          const zendeskIdentities = await getUserIdentities(user.zendesk_user_id);
-          
-          // Find aliased email identities (+client_ or +caregiver_)
-          const aliasedEmailIdentities = zendeskIdentities.filter(
-            (identity) => identity.type === "email" && identity.value && isAliasedEmail(identity.value)
-          );
-          
-          if (aliasedEmailIdentities.length > 0) {
-            logger.info(`   🗑️  Found ${aliasedEmailIdentities.length} aliased email identity(ies) to delete`);
-            for (const identity of aliasedEmailIdentities) {
-              try {
-                await deleteUserIdentity(user.zendesk_user_id, identity.id);
-                logger.info(`   ✅ Deleted aliased email identity ${identity.id} (${identity.value})`);
-              } catch (error) {
-                logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
+            
+            logger.info(`   🔄 Primary user ${user.ac_id} (Zendesk ID: ${user.zendesk_user_id}) - checking for aliased emails to clean`);
+            
+            // Get identities and find aliased email identities
+            const zendeskIdentities = await getUserIdentities(user.zendesk_user_id);
+            
+            // Find aliased email identities (+client_ or +caregiver_)
+            const aliasedEmailIdentities = zendeskIdentities.filter(
+              (identity) => identity.type === "email" && identity.value && isAliasedEmail(identity.value)
+            );
+            
+            if (aliasedEmailIdentities.length > 0) {
+              logger.info(`   🗑️  Found ${aliasedEmailIdentities.length} aliased email identity(ies) to delete for primary user ${user.ac_id}`);
+              for (const identity of aliasedEmailIdentities) {
+                try {
+                  await deleteUserIdentity(user.zendesk_user_id, identity.id);
+                  logger.info(`   ✅ Deleted aliased email identity ${identity.id} (${identity.value})`);
+                } catch (error) {
+                  logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
+                }
               }
+              return { success: true, userId: user.zendesk_user_id, cleaned: true };
+            } else {
+              logger.debug(`   ✅ No aliased email identities found for primary user ${user.ac_id} - no cleanup needed`);
+              return { success: true, userId: user.zendesk_user_id, cleaned: false };
             }
-          } else {
-            logger.debug(`   ✅ No aliased email identities found for primary user ${user.ac_id}`);
+          } catch (error) {
+            // If user doesn't exist (404) or other error, just log and skip
+            const is404 = 
+              error.response?.status === 404 ||
+              error.status === 404 ||
+              error.message?.includes('404') ||
+              error.message?.includes('Not Found');
+            
+            if (is404) {
+              logger.debug(`   ⏭️  Primary user ${user.ac_id} not found in Zendesk (404), skipping alias cleanup`);
+              return { success: true, userId: user.zendesk_user_id, cleaned: false };
+            }
+            
+            logger.warn(`   ⚠️  Failed to clean aliases for primary user ${user.ac_id}: ${error.message}`);
+            return { success: false, userId: user.zendesk_user_id, cleaned: false };
           }
-          
-          // Update user via PUT
-          const result = await updateUser(user.zendesk_user_id, zendeskPayload);
-          
-          // Sync identities via POST
-          if (zendeskPayload.identities && Array.isArray(zendeskPayload.identities)) {
-            await syncUserIdentities(user.zendesk_user_id, { identities: zendeskPayload.identities });
-          }
-          
-          totalUpdated++;
-          if (user.user_type === "client") {
-            clientsUpdated++;
-          } else if (user.user_type === "caregiver") {
-            caregiversUpdated++;
-          }
-          
-          return { success: !!result, userId: user.zendesk_user_id, isNew: false };
-        } catch (error) {
-          logger.error(`❌ Failed to process primary user ${user.ac_id}: ${error.message}`);
-          return { success: false, userId: user.zendesk_user_id, isNew: false };
-        }
-      });
+        });
       
-      const PRIMARY_CONCURRENCY = Number(process.env.ZENDESK_PRIMARY_CONCURRENCY) || 3;
-      const primaryResults = await runWithLimit(primaryUserTasks, PRIMARY_CONCURRENCY);
-      
-      const successfulPrimary = primaryResults.filter((r) => r && r.success).length;
-      const failedPrimary = primaryResults.length - successfulPrimary;
-      
-      logger.info(
-        `✅ Primary user processing complete: ${successfulPrimary} successful, ${failedPrimary} failed`
-      );
+      if (primaryUserTasks.length > 0) {
+        const PRIMARY_CONCURRENCY = Number(process.env.ZENDESK_PRIMARY_CONCURRENCY) || 3;
+        const primaryResults = await runWithLimit(primaryUserTasks, PRIMARY_CONCURRENCY);
+        
+        const successfulPrimary = primaryResults.filter((r) => r && r.success).length;
+        const cleanedCount = primaryResults.filter((r) => r && r.cleaned).length;
+        const failedPrimary = primaryResults.length - successfulPrimary;
+        
+        logger.info(
+          `✅ Primary user alias cleanup complete: ${successfulPrimary} successful (${cleanedCount} had aliases cleaned), ${failedPrimary} failed`
+        );
+      } else {
+        logger.info(`   ⏭️  No primary users with zendesk_user_id found (all were new and synced in batches)`);
+      }
     }
 
     const totalProcessed = totalMappingsUpdated;

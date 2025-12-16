@@ -763,6 +763,65 @@ export function saveOriginalUserData() {
  * Find email groups with 2+ users and no zendesk_primary tag
  * These users should not be sent to Zendesk and need notification
  */
+/**
+ * Find phone groups with 2+ users and no zendesk_primary tag
+ * These users should not be sent to Zendesk and need notification
+ */
+export function findPhoneGroupsWithoutPrimary() {
+  const db = getDb();
+  
+  // Get ALL users (active + non-active) to check for conflicts
+  const allUsers = db
+    .prepare("SELECT * FROM user_mappings")
+    .all()
+    .map(hydrateMapping);
+  
+  // Build phone index: phone -> [users who have this phone]
+  const phoneIndex = new Map();
+  
+  for (const user of allUsers) {
+    const userPhones = extractAllPhoneNumbers(user);
+    for (const phone of userPhones) {
+      if (!phone) continue;
+      if (!phoneIndex.has(phone)) {
+        phoneIndex.set(phone, []);
+      }
+      phoneIndex.get(phone).push(user);
+    }
+  }
+  
+  // Find groups with 2+ users and no zendesk_primary
+  const problematicGroups = [];
+  
+  for (const [phone, users] of phoneIndex.entries()) {
+    // Only consider groups with 2+ users
+    if (users.length < 2) continue;
+    
+    // Check if any user has zendesk_primary tag
+    const hasPrimary = users.some(
+      (u) => u.zendesk_primary === 1 || u.zendesk_primary === true
+    );
+    
+    // If no primary tag, this is a problematic group
+    if (!hasPrimary) {
+      problematicGroups.push({
+        phone: phone,
+        users: users.map(u => ({
+          ac_id: u.ac_id,
+          name: u.name || u.external_id || "unknown",
+          email: u.email,
+          phone: u.phone,
+          external_id: u.external_id,
+          user_type: u.user_type,
+          zendesk_user_id: u.zendesk_user_id,
+        })),
+      });
+    }
+  }
+  
+  return problematicGroups;
+}
+
 export function findEmailGroupsWithoutPrimary() {
   const db = getDb();
   
