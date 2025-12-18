@@ -1,4 +1,3 @@
-import { config } from "./config/index.js";
 import { logger } from "./config/logger.js";
 import { runJob } from "./core/jobRunner.js";
 import { initDatabase, closeDatabase } from "./infra/database.js";
