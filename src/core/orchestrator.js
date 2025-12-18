@@ -253,7 +253,9 @@ export async function runSync() {
         }
       }
       
-      // Send email notification to Paula
+      // Store alert for job completion email
+      alerts.duplicateEmailGroups = problematicGroups;
+      // Still send immediate email notification to Paula
       await sendEmailNotificationForDuplicateUsers(problematicGroups);
     } else {
       logger.info("✅ No problematic email groups found (all groups have zendesk_primary tag or < 2 users)");
@@ -821,15 +823,6 @@ export async function runSync() {
           clients: clientsCreated,
           caregivers: caregiversCreated,
           companyMembers: companyMembersCreated,
-        },
-      },
-      updated: {
-        count: totalUpdated,
-        users: updatedUsers,
-        byType: {
-          clients: clientsUpdated,
-          caregivers: caregiversUpdated,
-          companyMembers: companyMembersUpdated,
         },
       },
       statusChanges: {
