@@ -72,5 +72,4 @@ export function deleteUserIdentity(userId, identityId) {
   });
 }
 
-logger.info("💬 Zendesk API client initialized");
 

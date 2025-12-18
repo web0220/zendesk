@@ -75,5 +75,4 @@ export async function fetchCaregiverStatusOnly(id) {
   }
 }
 
-logger.info("📡 AlayaCare API client initialized");
 

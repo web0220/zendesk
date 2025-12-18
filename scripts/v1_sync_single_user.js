@@ -112,22 +112,17 @@ async function main() {
     }
 
     // 2️⃣ Save mapped data to database first (will skip if already synced, but that's OK)
-    logger.info("💾 Saving mapped data to database...");
     saveMappedDataToDatabase(user);
-    logger.info("✅ Saved mapped data to database");
 
     // 3️⃣ Process duplicate emails and phone numbers
-    logger.info("🔧 Processing duplicate emails and phone numbers...");
     try {
       processDuplicateEmailsAndPhones();
-      logger.info("✅ Finished processing duplicates");
     } catch (err) {
       logger.warn(`⚠️ Failed to process duplicates: ${err.message}`);
       // Continue even if duplicate processing fails
     }
 
     // 4️⃣ Read user from database (after duplicate processing)
-    logger.info("📖 Reading user from database...");
     let userFromDb;
     
     if (isResync) {
@@ -151,7 +146,6 @@ async function main() {
     }
 
     // 4️⃣ Convert database row to Zendesk user format
-    logger.info("🔄 Converting database row to Zendesk user format...");
     const zendeskUser = UserEntity.fromDbRow(userFromDb)?.toZendeskPayload();
     
     if (!zendeskUser) {
@@ -161,8 +155,6 @@ async function main() {
     logger.info(
       `📨 Sending ${targetType} ${zendeskUser.name || zendeskUser.external_id} to Zendesk...`
     );
-    logger.info("📤 Mapped Data (ready to send to Zendesk):");
-    logger.info(JSON.stringify(zendeskUser, null, 2));
 
     // 5️⃣ Send to Zendesk
     const upsertResult = await upsertSingleUser(zendeskUser);

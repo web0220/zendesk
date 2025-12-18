@@ -4,10 +4,6 @@ import { runRecurringTickets } from "./core/recurringTicketOrchestrator.js";
 import { initDatabase, closeDatabase } from "./infra/database.js";
 
 async function bootstrap() {
-  logger.info("Starting Zendesk Recurring Ticket Creation Service");
-  logger.info("Environment:", config.env);
-  logger.info("Zendesk Subdomain:", config.zendesk.subdomain);
-  logger.info("Configuration loaded successfully.");
 
   // Initialize database
   initDatabase();

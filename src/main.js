@@ -4,12 +4,6 @@ import { runJob } from "./core/jobRunner.js";
 import { initDatabase, closeDatabase } from "./infra/database.js";
 
 async function bootstrap() {
-  logger.info("Starting Zendesk ↔ AlayaCare Integration Service");
-  logger.info("Environment:", config.env);
-  logger.info("AlayaCare Base URL:", config.alayacare.baseUrl);
-  logger.info("Zendesk Subdomain:", config.zendesk.subdomain);
-  logger.info("Configuration loaded successfully.");
-
   // Initialize database
   initDatabase();
 
