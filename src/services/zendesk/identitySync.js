@@ -106,7 +106,6 @@ export async function syncUserIdentities(userId, userData) {
     existingIdentities.map((identity) => identity.value?.toLowerCase().trim())
   );
 
-  // logger.info(`📋 User ${userId} has ${existingIdentities.length} existing identities`);
 
   const identitiesToAdd = [];
 
@@ -115,7 +114,6 @@ export async function syncUserIdentities(userId, userData) {
       const normalizedValue = identity.value?.toLowerCase().trim();
 
       if (existingValues.has(normalizedValue)) {
-        // logger.debug(`   ⏭️  Skipping duplicate ${identity.type}: ${identity.value}`);
         continue;
       }
 

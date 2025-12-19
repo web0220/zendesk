@@ -6,6 +6,7 @@ export {
   getUsersPendingSync,
   resetCurrentActiveFlag,
   getUsersWithStatusChange,
+  getPrimaryUsersDeactivated,
   fetchAndUpdateUserStatus,
   getAllUsersForSync,
   processNonActiveUser,

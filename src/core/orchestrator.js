@@ -19,7 +19,7 @@ import {
   findPhoneGroupsWithoutPrimary,
   processNonActiveUser,
 } from "../infra/database.js";
-import { sendEmailNotificationForDuplicateUsers, sendEmailNotificationForDuplicatePhoneUsers, sendEmailNotificationForPrimaryStatusChange } from "../services/notification/email.js";
+// Email notifications removed - replaced with daily ticket creation
 import { getDb } from "../infra/db.api.js";
 import { hydrateMapping } from "../domain/user.db.mapper.js";
 
@@ -145,10 +145,8 @@ export async function runSync() {
         logger.warn(
           `⚠️  Found ${primaryUsersWithStatusChange.length} primary user(s) who changed from active to non-active`
         );
-        // Store alert for job completion email
-        alerts.primaryUsersDeactivated = primaryUsersWithStatusChange;
-        // Still send immediate email notification for primary users with status change
-        await sendEmailNotificationForPrimaryStatusChange(primaryUsersWithStatusChange);
+      // Store alert for daily ticket creation
+      alerts.primaryUsersDeactivated = primaryUsersWithStatusChange;
       }
       
       // Process each non-active user (one by one with concurrency control)
@@ -253,10 +251,8 @@ export async function runSync() {
         }
       }
       
-      // Store alert for job completion email
+      // Store alert for daily ticket creation
       alerts.duplicateEmailGroups = problematicGroups;
-      // Still send immediate email notification to Paula
-      await sendEmailNotificationForDuplicateUsers(problematicGroups);
     } else {
       logger.info("✅ No problematic email groups found (all groups have zendesk_primary tag or < 2 users)");
     }
@@ -280,10 +276,8 @@ export async function runSync() {
         }
       }
       
-      // Store alert for job completion email
+      // Store alert for daily ticket creation
       alerts.duplicatePhoneGroups = problematicPhoneGroups;
-      // Still send immediate email notification to Paula
-      await sendEmailNotificationForDuplicatePhoneUsers(problematicPhoneGroups);
     } else {
       logger.info("✅ No problematic phone groups found (all groups have zendesk_primary tag or < 2 users)");
     }

@@ -238,6 +238,39 @@ export function getUsersWithStatusChange() {
 }
 
 /**
+ * Finds all primary users who are currently non-active.
+ * 
+ * BUSINESS RULE: There should be NO zendesk_primary users in non-active users.
+ * If a primary user is non-active, it's an alert that must be reported until fixed.
+ * 
+ * This function finds ALL primary users who are currently non-active, regardless of:
+ * - When they were processed (non_active_status_fetched flag)
+ * - When they changed status
+ * - How long they've been non-active
+ * 
+ * The daily alert script will keep reporting these users every day until:
+ * - The user becomes active again (current_active = 1), OR
+ * - The user loses the zendesk_primary tag (zendesk_primary = 0)
+ * 
+ * @returns {Array} Array of primary user records with current_active = 0, zendesk_primary = 1, and zendesk_user_id IS NOT NULL
+ */
+export function getPrimaryUsersDeactivated() {
+  const db = getDb();
+  const stmt = db.prepare(`
+    SELECT * FROM user_mappings 
+    WHERE current_active = 0 
+      AND zendesk_primary = 1
+      AND zendesk_user_id IS NOT NULL
+    ORDER BY updated_at DESC
+  `);
+  const users = stmt.all().map(hydrateMapping);
+  logger.info(
+    `🔍 Found ${users.length} primary user(s) who are currently non-active (violates business rule - must be reported until fixed)`
+  );
+  return users;
+}
+
+/**
  * Maps client status from AlayaCare to Zendesk tag format
  * @param {string|null} status - Raw status from AlayaCare
  * @returns {string|null} Formatted status tag (e.g., 'cl_active', 'cl_on_hold')

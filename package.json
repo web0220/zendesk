@@ -10,7 +10,8 @@
     "recurring": "NODE_ENV=production node src/recurring.js",
     "recurring:coordination": "NODE_ENV=production node src/recurring.js --task=coordination",
     "recurring:concierge": "NODE_ENV=production node src/recurring.js --task=concierge",
-    "recurring:premium": "NODE_ENV=production node src/recurring.js --task=premium"
+    "recurring:premium": "NODE_ENV=production node src/recurring.js --task=premium",
+    "daily:alert": "NODE_ENV=production node src/dailyAlert.js"
     },
   "keywords": [],
   "author": "",

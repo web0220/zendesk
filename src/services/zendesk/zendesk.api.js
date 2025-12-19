@@ -72,4 +72,22 @@ export function deleteUserIdentity(userId, identityId) {
   });
 }
 
+/**
+ * Search for Zendesk user by email address
+ * @param {string} email - Email address to search for
+ * @returns {Promise<Object|null>} User object or null if not found
+ */
+export function searchUserByEmail(email) {
+  return zendeskRequest(async () => {
+    const query = `email:${email}`;
+    const res = await zendeskLimiter.schedule(() => 
+      zendeskClient.get(`/users/search.json?query=${encodeURIComponent(query)}`)
+    );
+    const users = res.data?.users || [];
+    // Return first active user, or first user if no active users
+    const activeUser = users.find(u => u.active) || users[0];
+    return activeUser || null;
+  });
+}
+
 

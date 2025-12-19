@@ -170,6 +170,7 @@ export async function createPrivateTaskTicket({
   contactCategoryValue = null,
   contactCategoryFieldId = null,
   commentBody = "Automated recurring check-in ticket",
+  assigneeId = null,
 }) {
   if (!requesterId || !subject || !dueAt) {
     logger.error("❌ Missing required fields for ticket creation");
@@ -200,6 +201,11 @@ export async function createPrivateTaskTicket({
         },
       },
     };
+
+    // Add assignee if provided
+    if (assigneeId) {
+      ticketPayload.ticket.assignee_id = assigneeId;
+    }
 
     // Add custom fields if provided
     if (customFields.length > 0) {

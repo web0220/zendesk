@@ -329,6 +329,20 @@ export function normalizeCaregiverRecord(caregiver) {
     const groups = caregiver.groups || [];
     const departments = caregiver.departments || [];
     const tags = caregiver.tags || [];
+    
+    // For caregivers, tags can also be in demographics.tags as a string
+    // Combine tags from both sources
+    let allTags = Array.isArray(tags) ? [...tags] : [];
+    const demographicsTags = demographics.tags;
+    if (demographicsTags) {
+      if (typeof demographicsTags === "string") {
+        // If it's a string, split by comma and add to tags array
+        const splitTags = demographicsTags.split(",").map((t) => t.trim()).filter(Boolean);
+        allTags = [...allTags, ...splitTags];
+      } else if (Array.isArray(demographicsTags)) {
+        allTags = [...allTags, ...demographicsTags];
+      }
+    }
 
     const phoneDetails = collectCaregiverPhoneDetails(caregiver);
     const phones = phoneDetails.map((entry) => entry.normalized);
@@ -369,7 +383,7 @@ export function normalizeCaregiverRecord(caregiver) {
       .map((name) => name.replace(/\s+/g, "_").toLowerCase());
     const departmentNames = departmentArray.length > 0 ? departmentArray : null;
 
-    const zendeskPrimary = extractZendeskPrimary(tags);
+    const zendeskPrimary = extractZendeskPrimary(allTags);
     const caregiverStatusValue = mapCaregiverStatus(status);
 
     const phoneIdentities = phones
