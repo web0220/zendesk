@@ -198,9 +198,14 @@ export async function createPrivateTaskTicket({
         comment: {
           body: commentBody,
           public: false, // Private comment
+          html_body: commentBody, // HTML formatted body for better rendering
         },
       },
     };
+
+    // Skip notifications when creating ticket via API
+    // This prevents the requester from receiving email notifications
+    // ticketPayload.skip_notification = true;
 
     // Add assignee if provided
     if (assigneeId) {

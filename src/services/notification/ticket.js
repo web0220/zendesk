@@ -30,13 +30,41 @@ function getAssigneeUserId() {
 
 /**
  * Build alert message content for ticket internal note
+ * Uses HTML formatting for proper display in Zendesk
  * @param {Object} alerts - Alert object with duplicateEmailGroups, duplicatePhoneGroups, primaryUsersDeactivated
- * @returns {string} Formatted alert message
+ * @returns {string} Formatted alert message in HTML
+ */
+/**
+ * Format date in American standard format with day of week in EST timezone
+ * @returns {string} Formatted date string (e.g., "Monday, December 19, 2025 10:10:03 PM EST")
+ */
+function formatDateEST() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  });
+  return formatter.format(now);
+}
+
+/**
+ * Build alert message content for ticket internal note
+ * Uses HTML formatting for proper display in Zendesk
+ * @param {Object} alerts - Alert object with duplicateEmailGroups, duplicatePhoneGroups, primaryUsersDeactivated
+ * @returns {string} Formatted alert message in HTML
  */
 function buildAlertMessage(alerts) {
-  let message = `Zendesk-AlayaCare Integration Alert Report\n\n`;
-  message += `Generated: ${new Date().toISOString()}\n\n`;
-  message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  let message = `<h2>Zendesk-AlayaCare Integration Alert Report</h2>`;
+  message += `<p><strong>Generated:</strong> ${formatDateEST()}</p>`;
+  message += `<hr>`;
 
   const hasAlerts = 
     (alerts.duplicateEmailGroups && alerts.duplicateEmailGroups.length > 0) ||
@@ -44,78 +72,85 @@ function buildAlertMessage(alerts) {
     (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0);
 
   if (!hasAlerts) {
-    message += `✅ No alerts detected during sync.\n`;
+    message += `<p>✅ No alerts detected during sync.</p>`;
     return message;
   }
 
   // Duplicate email groups without primary tag
   if (alerts.duplicateEmailGroups && alerts.duplicateEmailGroups.length > 0) {
-    message += `📧 DUPLICATE EMAIL GROUPS WITHOUT PRIMARY TAG: ${alerts.duplicateEmailGroups.length} group(s)\n`;
-    message += `   Total affected users: ${alerts.duplicateEmailGroups.reduce((sum, g) => sum + g.users.length, 0)}\n\n`;
+    message += `<h3>DUPLICATE EMAIL GROUPS WITHOUT PRIMARY TAG: ${alerts.duplicateEmailGroups.length} group(s)</h3>`;
+    message += `<p><strong>Total affected users:</strong> ${alerts.duplicateEmailGroups.reduce((sum, g) => sum + g.users.length, 0)}</p>`;
     
     for (let i = 0; i < alerts.duplicateEmailGroups.length; i++) {
       const group = alerts.duplicateEmailGroups[i];
-      message += `   Group ${i + 1}: Email "${group.email}"\n`;
-      message += `   Users (${group.users.length}):\n`;
+      message += `<div style="margin: 15px 0; padding: 10px; background-color: #f5f5f5; border-left: 4px solid #e74c3c;">`;
+      message += `<h4>Group ${i + 1}: Email "${group.email}"</h4>`;
+      message += `<p><strong>Users (${group.users.length}):</strong></p>`;
       
       for (const user of group.users) {
-        message += `     - Name: ${user.name || "N/A"}\n`;
-        message += `       AC ID: ${user.ac_id}\n`;
-        message += `       External ID: ${user.external_id || "N/A"}\n`;
-        message += `       User Type: ${user.user_type || "N/A"}\n`;
-        message += `       Zendesk ID: ${user.zendesk_user_id || "Not synced"}\n`;
-        message += `       Email: ${user.email || "N/A"}\n`;
-        message += `       Reason: No zendesk_primary tag assigned\n\n`;
+        message += `<div style="margin: 10px 0; padding: 10px; background-color: #ffffff; border: 1px solid #ddd;">`;
+        message += `<ul style="margin: 0; padding-left: 20px;">`;
+        message += `<li><strong>Name:</strong> ${user.name || "N/A"}</li>`;
+        message += `<li><strong>External ID:</strong> ${user.external_id || "N/A"}</li>`;
+        message += `<li><strong>User Type:</strong> ${user.user_type || "N/A"}</li>`;
+        message += `<li><strong>Zendesk ID:</strong> ${user.zendesk_user_id || "Not synced"}</li>`;
+        message += `</ul>`;
+        message += `</div>`;
       }
+      message += `</div>`;
     }
-    message += `\n`;
   }
 
   // Duplicate phone groups without primary tag
   if (alerts.duplicatePhoneGroups && alerts.duplicatePhoneGroups.length > 0) {
-    message += `📞 DUPLICATE PHONE GROUPS WITHOUT PRIMARY TAG: ${alerts.duplicatePhoneGroups.length} group(s)\n`;
-    message += `   Total affected users: ${alerts.duplicatePhoneGroups.reduce((sum, g) => sum + g.users.length, 0)}\n\n`;
+    message += `<h3>📞 DUPLICATE PHONE GROUPS WITHOUT PRIMARY TAG: ${alerts.duplicatePhoneGroups.length} group(s)</h3>`;
+    message += `<p><strong>Total affected users:</strong> ${alerts.duplicatePhoneGroups.reduce((sum, g) => sum + g.users.length, 0)}</p>`;
     
     for (let i = 0; i < alerts.duplicatePhoneGroups.length; i++) {
       const group = alerts.duplicatePhoneGroups[i];
-      message += `   Group ${i + 1}: Phone "${group.phone}"\n`;
-      message += `   Users (${group.users.length}):\n`;
+      message += `<div style="margin: 15px 0; padding: 10px; background-color: #f5f5f5; border-left: 4px solid #e74c3c;">`;
+      message += `<h4>Group ${i + 1}: Phone "${group.phone}"</h4>`;
+      message += `<p><strong>Users (${group.users.length}):</strong></p>`;
       
       for (const user of group.users) {
-        message += `     - Name: ${user.name || "N/A"}\n`;
-        message += `       AC ID: ${user.ac_id}\n`;
-        message += `       External ID: ${user.external_id || "N/A"}\n`;
-        message += `       User Type: ${user.user_type || "N/A"}\n`;
-        message += `       Zendesk ID: ${user.zendesk_user_id || "Not synced"}\n`;
-        message += `       Email: ${user.email || "N/A"}\n`;
-        message += `       Phone: ${user.phone || "N/A"}\n`;
-        message += `       Reason: No zendesk_primary tag assigned\n\n`;
+        message += `<div style="margin: 10px 0; padding: 10px; background-color: #ffffff; border: 1px solid #ddd;">`;
+        message += `<ul style="margin: 0; padding-left: 20px;">`;
+        message += `<li><strong>Name:</strong> ${user.name || "N/A"}</li>`;
+        message += `<li><strong>External ID:</strong> ${user.external_id || "N/A"}</li>`;
+        message += `<li><strong>User Type:</strong> ${user.user_type || "N/A"}</li>`;
+        message += `<li><strong>Zendesk ID:</strong> ${user.zendesk_user_id || "Not synced"}</li>`;
+        message += `<li><strong>Email:</strong> ${user.email || "N/A"}</li>`;
+        message += `<li><strong>Phone:</strong> ${user.phone || "N/A"}</li>`;
+        message += `</ul>`;
+        message += `</div>`;
       }
+      message += `</div>`;
     }
-    message += `\n`;
   }
 
   // Primary users deactivated
   if (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0) {
-    message += `🔴 PRIMARY USERS CHANGED FROM ACTIVE TO NON-ACTIVE: ${alerts.primaryUsersDeactivated.length} user(s)\n\n`;
+    message += `<h3>🔴 PRIMARY USERS CHANGED FROM ACTIVE TO NON-ACTIVE: ${alerts.primaryUsersDeactivated.length} user(s)</h3>`;
     
     for (let i = 0; i < alerts.primaryUsersDeactivated.length; i++) {
       const user = alerts.primaryUsersDeactivated[i];
-      message += `   User ${i + 1}:\n`;
-      message += `     - Name: ${user.name || "N/A"}\n`;
-      message += `       AC ID: ${user.ac_id}\n`;
-      message += `       External ID: ${user.external_id || "N/A"}\n`;
-      message += `       User Type: ${user.user_type || "N/A"}\n`;
-      message += `       Zendesk ID: ${user.zendesk_user_id || "Not synced"}\n`;
-      message += `       Email: ${user.email || "N/A"}\n`;
-      message += `       Phone: ${user.phone || "N/A"}\n`;
-      message += `       Previous Status: Active (changed to non-active)\n\n`;
+      message += `<div style="margin: 15px 0; padding: 10px; background-color: #fff3cd; border-left: 4px solid #ffc107;">`;
+      message += `<h4>User ${i + 1}</h4>`;
+      message += `<ul style="margin: 0; padding-left: 20px;">`;
+      message += `<li><strong>Name:</strong> ${user.name || "N/A"}</li>`;
+      message += `<li><strong>External ID:</strong> ${user.external_id || "N/A"}</li>`;
+      message += `<li><strong>User Type:</strong> ${user.user_type || "N/A"}</li>`;
+      message += `<li><strong>Zendesk ID:</strong> ${user.zendesk_user_id || "Not synced"}</li>`;
+      message += `<li><strong>Email:</strong> ${user.email || "N/A"}</li>`;
+      message += `<li><strong>Phone:</strong> ${user.phone || "N/A"}</li>`;
+      message += `<li><strong>Previous Status:</strong> Active (changed to non-active)</li>`;
+      message += `</ul>`;
+      message += `</div>`;
     }
-    message += `\n`;
   }
 
-  message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-  message += `Please review and take appropriate action.\n`;
+  message += `<hr>`;
+  message += `<p><strong>Please review and take appropriate action.</strong></p>`;
 
   return message;
 }
