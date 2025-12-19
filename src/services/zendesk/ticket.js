@@ -204,8 +204,9 @@ export async function createPrivateTaskTicket({
     };
 
     // Skip notifications when creating ticket via API
-    // This prevents the requester from receiving email notifications
-    // ticketPayload.skip_notification = true;
+    // This prevents email notifications from being sent to requesters, watchers, and CC'd users
+    // Note: This may not prevent all Zendesk triggers/automations, but prevents default notifications
+    ticketPayload.skip_notification = true;
 
     // Add assignee if provided
     if (assigneeId) {

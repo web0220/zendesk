@@ -21,7 +21,6 @@ function collectCurrentAlerts() {
 
   try {
     // Check for email groups without primary tag
-    logger.info("🔍 Checking for duplicate email groups without primary tag...");
     const emailGroups = findEmailGroupsWithoutPrimary();
     if (emailGroups.length > 0) {
       alerts.duplicateEmailGroups = emailGroups;
@@ -31,7 +30,6 @@ function collectCurrentAlerts() {
     }
 
     // Check for phone groups without primary tag
-    logger.info("🔍 Checking for duplicate phone groups without primary tag...");
     const phoneGroups = findPhoneGroupsWithoutPrimary();
     if (phoneGroups.length > 0) {
       alerts.duplicatePhoneGroups = phoneGroups;
@@ -44,7 +42,6 @@ function collectCurrentAlerts() {
     // BUSINESS RULE: There should be NO zendesk_primary users in non-active users.
     // This finds ALL primary users who are currently non-active, regardless of when they were processed.
     // The alert will persist daily until the issue is fixed (user becomes active OR loses primary tag).
-    logger.info("🔍 Checking for primary users who are non-active (business rule violation)...");
     const primaryUsersDeactivated = getPrimaryUsersDeactivated();
     
     if (primaryUsersDeactivated.length > 0) {
@@ -66,9 +63,6 @@ function collectCurrentAlerts() {
  * This should be run at 8:50am EST daily via cronjob
  */
 export async function createDailyAlertTicket() {
-  logger.info("═══════════════════════════════════════════════════════════");
-  logger.info("📋 Daily Alert Ticket Creation");
-  logger.info("═══════════════════════════════════════════════════════════");
 
   try {
     // Collect current alerts from database

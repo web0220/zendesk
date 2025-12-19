@@ -1,19 +1,3 @@
-#!/usr/bin/env node
-
-/**
- * Daily Alert Ticket Script
- * 
- * This script should be run at 8:50am EST daily via cronjob.
- * It collects current alerts from the database and creates a Zendesk ticket
- * if any alerts are detected.
- * 
- * Usage:
- *   npm run recurring:premium
- * 
- * Or directly:
- *   node src/dailyAlert.js
- */
-
 import { config } from "./config/index.js";
 import { initDatabase } from "./infra/db.api.js";
 import { logger } from "./config/logger.js";
@@ -21,8 +5,6 @@ import { createDailyAlertTicket } from "./core/dailyAlertTicket.js";
 
 async function main() {
   try {
-    logger.info("🚀 Starting daily alert ticket creation...");
-    
     // Initialize database
     initDatabase();
     

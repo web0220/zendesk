@@ -119,8 +119,6 @@ function buildAlertMessage(alerts) {
         message += `<li><strong>External ID:</strong> ${user.external_id || "N/A"}</li>`;
         message += `<li><strong>User Type:</strong> ${user.user_type || "N/A"}</li>`;
         message += `<li><strong>Zendesk ID:</strong> ${user.zendesk_user_id || "Not synced"}</li>`;
-        message += `<li><strong>Email:</strong> ${user.email || "N/A"}</li>`;
-        message += `<li><strong>Phone:</strong> ${user.phone || "N/A"}</li>`;
         message += `</ul>`;
         message += `</div>`;
       }

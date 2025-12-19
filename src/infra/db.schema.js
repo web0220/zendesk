@@ -111,8 +111,6 @@ export function ensureSchema(db) {
     "idx_non_active_status_fetched",
     "CREATE INDEX IF NOT EXISTS idx_non_active_status_fetched ON user_mappings(non_active_status_fetched)"
   );
-
-  logger.info("✅ Database tables initialized");
 }
 
 function ensureColumnExists(db, tableName, columnName, columnDefinition) {
