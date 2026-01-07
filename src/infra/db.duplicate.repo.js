@@ -770,9 +770,9 @@ export function saveOriginalUserData() {
 export function findPhoneGroupsWithoutPrimary() {
   const db = getDb();
   
-  // Get ALL users (active + non-active) to check for conflicts
+  // Get only active users to check for conflicts (ignore non-active users like discharged, onhold, etc.)
   const allUsers = db
-    .prepare("SELECT * FROM user_mappings")
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
     .all()
     .map(hydrateMapping);
   
@@ -825,9 +825,9 @@ export function findPhoneGroupsWithoutPrimary() {
 export function findEmailGroupsWithoutPrimary() {
   const db = getDb();
   
-  // Get ALL users (active + non-active) to check for conflicts
+  // Get only active users to check for conflicts (ignore non-active users like discharged, onhold, etc.)
   const allUsers = db
-    .prepare("SELECT * FROM user_mappings")
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
     .all()
     .map(hydrateMapping);
   
