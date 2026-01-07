@@ -2,6 +2,7 @@ import { logger } from "../config/logger.js";
 import { createAlertTicket } from "../services/notification/ticket.js";
 import { writeAlertLog } from "../services/notification/alertLogger.js";
 import { findEmailGroupsWithoutPrimary, findPhoneGroupsWithoutPrimary, getPrimaryUsersDeactivated } from "../infra/database.js";
+import { getAllEdgeCaseErrors, clearEdgeCaseErrors } from "../infra/edgeCaseErrors.js";
 
 /**
  * Collect all current alerts from the database
@@ -17,6 +18,8 @@ function collectCurrentAlerts() {
     duplicateEmailGroups: [],
     duplicatePhoneGroups: [],
     primaryUsersDeactivated: [],
+    edgeCaseEmailErrors: [],
+    edgeCasePhoneErrors: [],
   };
 
   try {
@@ -51,6 +54,22 @@ function collectCurrentAlerts() {
       logger.info("✅ No primary users with status change found (business rule satisfied)");
     }
 
+    // Check for edge case errors (non-primary users sharing emails/phones that don't match primary user)
+    const edgeCaseErrors = getAllEdgeCaseErrors();
+    if (edgeCaseErrors.edgeCaseEmailErrors.length > 0) {
+      alerts.edgeCaseEmailErrors = edgeCaseErrors.edgeCaseEmailErrors;
+      logger.warn(`⚠️  Found ${edgeCaseErrors.edgeCaseEmailErrors.length} edge case email error(s) (non-primary users sharing emails that don't match primary user)`);
+    } else {
+      logger.info("✅ No edge case email errors found");
+    }
+
+    if (edgeCaseErrors.edgeCasePhoneErrors.length > 0) {
+      alerts.edgeCasePhoneErrors = edgeCaseErrors.edgeCasePhoneErrors;
+      logger.warn(`⚠️  Found ${edgeCaseErrors.edgeCasePhoneErrors.length} edge case phone error(s) (non-primary users sharing phones that don't match primary user)`);
+    } else {
+      logger.info("✅ No edge case phone errors found");
+    }
+
     return alerts;
   } catch (error) {
     logger.error(`❌ Failed to collect alerts: ${error.message}`);
@@ -78,7 +97,9 @@ export async function createDailyAlertTicket() {
     const hasAlerts = 
       (alerts.duplicateEmailGroups && alerts.duplicateEmailGroups.length > 0) ||
       (alerts.duplicatePhoneGroups && alerts.duplicatePhoneGroups.length > 0) ||
-      (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0);
+      (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0) ||
+      (alerts.edgeCaseEmailErrors && alerts.edgeCaseEmailErrors.length > 0) ||
+      (alerts.edgeCasePhoneErrors && alerts.edgeCasePhoneErrors.length > 0);
 
     if (!hasAlerts) {
       logger.info("✅ No alerts detected - no ticket will be created");
@@ -96,6 +117,13 @@ export async function createDailyAlertTicket() {
 
     if (ticket) {
       logger.info(`✅ Successfully created alert ticket #${ticket.id}`);
+      
+      // Clear edge case errors after ticket is created
+      // This ensures errors from previous day don't persist into the next day
+      // New errors will be detected in subsequent syncs (7am-10pm)
+      clearEdgeCaseErrors();
+      logger.info("🧹 Cleared edge case errors after creating alert ticket");
+      
       return {
         success: true,
         ticketCreated: true,

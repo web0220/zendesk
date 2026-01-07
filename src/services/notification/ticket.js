@@ -69,7 +69,9 @@ function buildAlertMessage(alerts) {
   const hasAlerts = 
     (alerts.duplicateEmailGroups && alerts.duplicateEmailGroups.length > 0) ||
     (alerts.duplicatePhoneGroups && alerts.duplicatePhoneGroups.length > 0) ||
-    (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0);
+    (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0) ||
+    (alerts.edgeCaseEmailErrors && alerts.edgeCaseEmailErrors.length > 0) ||
+    (alerts.edgeCasePhoneErrors && alerts.edgeCasePhoneErrors.length > 0);
 
   if (!hasAlerts) {
     message += `<p>✅ No alerts detected during sync.</p>`;
@@ -147,6 +149,64 @@ function buildAlertMessage(alerts) {
     }
   }
 
+  // Edge case email errors (non-primary users sharing emails that don't match primary user)
+  if (alerts.edgeCaseEmailErrors && alerts.edgeCaseEmailErrors.length > 0) {
+    message += `<h3>⚠️ EDGE CASE: NON-PRIMARY USERS SHARING EMAILS (${alerts.edgeCaseEmailErrors.length} error(s))</h3>`;
+    message += `<p><strong>Issue:</strong> Non-primary users share an email address that doesn't match the primary user's emails. `;
+    message += `This causes a conflict because the system only aliases emails that match the primary user, leaving these emails unaliased and causing sync failures.</p>`;
+    message += `<p><strong>Total affected users:</strong> ${alerts.edgeCaseEmailErrors.reduce((sum, e) => sum + e.users.length, 0)}</p>`;
+    
+    for (let i = 0; i < alerts.edgeCaseEmailErrors.length; i++) {
+      const error = alerts.edgeCaseEmailErrors[i];
+      message += `<div style="margin: 15px 0; padding: 10px; background-color: #f8d7da; border-left: 4px solid #dc3545;">`;
+      message += `<h4>Error ${i + 1}: Email "${error.email}"</h4>`;
+      message += `<p><strong>Primary User:</strong> ${error.primaryUser.name || error.primaryUser.external_id || "unknown"} (${error.primaryUser.ac_id})</p>`;
+      message += `<p><strong>Non-Primary Users Sharing This Email (${error.users.length}):</strong></p>`;
+      
+      for (const user of error.users) {
+        message += `<div style="margin: 10px 0; padding: 10px; background-color: #ffffff; border: 1px solid #ddd;">`;
+        message += `<ul style="margin: 0; padding-left: 20px;">`;
+        message += `<li><strong>Name:</strong> ${user.name || "N/A"}</li>`;
+        message += `<li><strong>External ID:</strong> ${user.external_id || "N/A"}</li>`;
+        message += `<li><strong>User Type:</strong> ${user.user_type || "N/A"}</li>`;
+        message += `<li><strong>Zendesk ID:</strong> ${user.zendesk_user_id || "Not synced"}</li>`;
+        message += `<li><strong>AC ID:</strong> ${user.ac_id}</li>`;
+        message += `</ul>`;
+        message += `</div>`;
+      }
+      message += `</div>`;
+    }
+  }
+
+  // Edge case phone errors (non-primary users sharing phones that don't match primary user)
+  if (alerts.edgeCasePhoneErrors && alerts.edgeCasePhoneErrors.length > 0) {
+    message += `<h3>⚠️ EDGE CASE: NON-PRIMARY USERS SHARING PHONES (${alerts.edgeCasePhoneErrors.length} error(s))</h3>`;
+    message += `<p><strong>Issue:</strong> Non-primary users share a phone number that doesn't match the primary user's phones. `;
+    message += `This causes a conflict because the system only moves phones to shared_phone_number for phones that match the primary user, leaving these phones unhandled and causing sync failures.</p>`;
+    message += `<p><strong>Total affected users:</strong> ${alerts.edgeCasePhoneErrors.reduce((sum, e) => sum + e.users.length, 0)}</p>`;
+    
+    for (let i = 0; i < alerts.edgeCasePhoneErrors.length; i++) {
+      const error = alerts.edgeCasePhoneErrors[i];
+      message += `<div style="margin: 15px 0; padding: 10px; background-color: #f8d7da; border-left: 4px solid #dc3545;">`;
+      message += `<h4>Error ${i + 1}: Phone "${error.phone}"</h4>`;
+      message += `<p><strong>Primary User:</strong> ${error.primaryUser.name || error.primaryUser.external_id || "unknown"} (${error.primaryUser.ac_id})</p>`;
+      message += `<p><strong>Non-Primary Users Sharing This Phone (${error.users.length}):</strong></p>`;
+      
+      for (const user of error.users) {
+        message += `<div style="margin: 10px 0; padding: 10px; background-color: #ffffff; border: 1px solid #ddd;">`;
+        message += `<ul style="margin: 0; padding-left: 20px;">`;
+        message += `<li><strong>Name:</strong> ${user.name || "N/A"}</li>`;
+        message += `<li><strong>External ID:</strong> ${user.external_id || "N/A"}</li>`;
+        message += `<li><strong>User Type:</strong> ${user.user_type || "N/A"}</li>`;
+        message += `<li><strong>Zendesk ID:</strong> ${user.zendesk_user_id || "Not synced"}</li>`;
+        message += `<li><strong>AC ID:</strong> ${user.ac_id}</li>`;
+        message += `</ul>`;
+        message += `</div>`;
+      }
+      message += `</div>`;
+    }
+  }
+
   message += `<hr>`;
   message += `<p><strong>Please review and take appropriate action.</strong></p>`;
 
@@ -191,7 +251,9 @@ export async function createAlertTicket(alerts) {
     const alertCount = 
       (alerts.duplicateEmailGroups?.length || 0) +
       (alerts.duplicatePhoneGroups?.length || 0) +
-      (alerts.primaryUsersDeactivated?.length || 0);
+      (alerts.primaryUsersDeactivated?.length || 0) +
+      (alerts.edgeCaseEmailErrors?.length || 0) +
+      (alerts.edgeCasePhoneErrors?.length || 0);
 
     const subject = `[Zendesk Sync Alert] ${alertCount} Alert(s) Detected`;
 

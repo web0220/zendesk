@@ -82,6 +82,11 @@ export async function runSync() {
   };
 
   try {
+    // Note: Edge case errors are NOT cleared here - they persist across syncs
+    // and are only cleared after the daily alert ticket is created (at 9am)
+    // This allows errors detected during multiple syncs (7am-10pm) to accumulate
+    // until the daily alert ticket is created
+    
     resetCurrentActiveFlag();
 
     const clients = await fetchClients({ status: "active" });

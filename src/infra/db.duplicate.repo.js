@@ -1,6 +1,7 @@
 import { logger } from "../config/logger.js";
 import { hydrateMapping } from "../domain/user.db.mapper.js";
 import { getDb } from "./db.api.js";
+import { storeEdgeCaseEmailError, storeEdgeCasePhoneError } from "./edgeCaseErrors.js";
 
 export function extractAllEmails(user) {
   const emails = new Set();
@@ -347,6 +348,65 @@ function processEmailDuplicates() {
         processedCount++;
       }
     }
+
+    // EDGE CASE DETECTION: Check if non-primary users share emails that don't match primary user
+    // After aliasing emails that match primary user, check if non-primary users still share other emails
+    const nonPrimaryUsers = group.filter((u) => u.ac_id !== primaryUser.ac_id);
+    if (nonPrimaryUsers.length > 1) {
+      const primaryEmails = extractAllEmails(primaryUser).map(e => e.toLowerCase());
+      
+      // Build email index for non-primary users only (excluding primary user's emails)
+      const nonPrimaryEmailIndex = new Map();
+      for (const user of nonPrimaryUsers) {
+        const userEmails = extractAllEmails(user);
+        for (const email of userEmails) {
+          const normalizedEmail = email.toLowerCase();
+          // Only consider emails that don't match primary user's emails
+          if (!primaryEmails.includes(normalizedEmail)) {
+            if (!nonPrimaryEmailIndex.has(normalizedEmail)) {
+              nonPrimaryEmailIndex.set(normalizedEmail, []);
+            }
+            nonPrimaryEmailIndex.get(normalizedEmail).push(user);
+          }
+        }
+      }
+
+      // Find emails shared by 2+ non-primary users (edge case)
+      for (const [email, sharingUsers] of nonPrimaryEmailIndex.entries()) {
+        if (sharingUsers.length > 1) {
+          logger.error(
+            `❌ EDGE CASE DETECTED: Non-primary users share email "${email}" that doesn't match primary user. ` +
+            `Users: ${sharingUsers.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ")}. ` +
+            `Primary user: ${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id})`
+          );
+          
+          // Store edge case error (deduplication handled internally)
+          const errorStored = storeEdgeCaseEmailError({
+            email: email,
+            users: sharingUsers.map(u => ({
+              ac_id: u.ac_id,
+              name: u.name || u.external_id || "unknown",
+              email: u.email,
+              external_id: u.external_id,
+              user_type: u.user_type,
+              zendesk_user_id: u.zendesk_user_id,
+            })),
+            primaryUser: {
+              ac_id: primaryUser.ac_id,
+              name: primaryUser.name || primaryUser.external_id || "unknown",
+              email: primaryUser.email,
+              external_id: primaryUser.external_id,
+              user_type: primaryUser.user_type,
+              zendesk_user_id: primaryUser.zendesk_user_id,
+            },
+          });
+          
+          if (!errorStored) {
+            logger.debug(`   ⏭️  Edge case email error already stored (duplicate detected): ${email}`);
+          }
+        }
+      }
+    }
   }
 
   logger.info(`✅ Processed ${processedCount} duplicate users in ${emailGroups.length} email group(s)`);
@@ -473,6 +533,67 @@ function processPhoneDuplicates() {
     }
 
     processedUserIds.add(primaryUser.ac_id);
+
+    // EDGE CASE DETECTION: Check if non-primary users share phones that don't match primary user
+    // After moving phones to shared_phone_number for primary user's phones, check if non-primary users still share other phones
+    const nonPrimaryUsersForEdgeCase = phoneGroup.filter((u) => u.ac_id !== primaryUser.ac_id);
+    if (nonPrimaryUsersForEdgeCase.length > 1) {
+      const primaryPhones = extractAllPhoneNumbers(primaryUser);
+      
+      // Build phone index for non-primary users only (excluding primary user's phones)
+      const nonPrimaryPhoneIndex = new Map();
+      for (const user of nonPrimaryUsersForEdgeCase) {
+        const userPhones = extractAllPhoneNumbers(user);
+        for (const phone of userPhones) {
+          if (!phone) continue;
+          // Only consider phones that don't match primary user's phones
+          if (!primaryPhones.includes(phone)) {
+            if (!nonPrimaryPhoneIndex.has(phone)) {
+              nonPrimaryPhoneIndex.set(phone, []);
+            }
+            nonPrimaryPhoneIndex.get(phone).push(user);
+          }
+        }
+      }
+
+      // Find phones shared by 2+ non-primary users (edge case)
+      for (const [phone, sharingUsers] of nonPrimaryPhoneIndex.entries()) {
+        if (sharingUsers.length > 1) {
+          logger.error(
+            `❌ EDGE CASE DETECTED: Non-primary users share phone "${phone}" that doesn't match primary user. ` +
+            `Users: ${sharingUsers.map((u) => `${u.ac_id} (${u.name || u.external_id})`).join(", ")}. ` +
+            `Primary user: ${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id})`
+          );
+          
+          // Store edge case error (deduplication handled internally)
+          const errorStored = storeEdgeCasePhoneError({
+            phone: phone,
+            users: sharingUsers.map(u => ({
+              ac_id: u.ac_id,
+              name: u.name || u.external_id || "unknown",
+              email: u.email,
+              phone: u.phone,
+              external_id: u.external_id,
+              user_type: u.user_type,
+              zendesk_user_id: u.zendesk_user_id,
+            })),
+            primaryUser: {
+              ac_id: primaryUser.ac_id,
+              name: primaryUser.name || primaryUser.external_id || "unknown",
+              email: primaryUser.email,
+              phone: primaryUser.phone,
+              external_id: primaryUser.external_id,
+              user_type: primaryUser.user_type,
+              zendesk_user_id: primaryUser.zendesk_user_id,
+            },
+          });
+          
+          if (!errorStored) {
+            logger.debug(`   ⏭️  Edge case phone error already stored (duplicate detected): ${phone}`);
+          }
+        }
+      }
+    }
   }
 
   logger.info(
