@@ -5,6 +5,7 @@ import {
   getUserIdentities,
   getZendeskClient,
   updateUserCustomFields,
+  deleteUserIdentity,
 } from "./zendesk.api.js";
 import { zendeskLimiter } from "../../utils/limiter.js";
 
@@ -147,6 +148,99 @@ export async function syncUserIdentities(userId, userData) {
         logger.warn(`   ⚠️ Failed to add ${identity.value}: ${JSON.stringify(msg)}`);
       }
     }
+  }
+}
+
+/**
+ * Sync user identities to exactly match database (source of truth).
+ * 
+ * This function ensures Zendesk identities match the database by:
+ * 1. Getting existing identities from Zendesk
+ * 2. Comparing with identities from database
+ * 3. Deleting identities in Zendesk that are not in database
+ * 4. Adding identities in database that are not in Zendesk
+ * 
+ * Database is the source of truth - Zendesk should match it exactly.
+ * 
+ * @param {number} userId - Zendesk user ID
+ * @param {Array} databaseIdentities - Identities from database (source of truth)
+ * @returns {Promise<void>}
+ */
+export async function syncUserIdentitiesToMatchDatabase(userId, databaseIdentities = []) {
+  if (!userId) return;
+
+  // Normalize database identities
+  const normalizedDbIdentities = normalizeIdentities(databaseIdentities);
+  const dbIdentityMap = new Map();
+  
+  for (const identity of normalizedDbIdentities) {
+    const key = `${identity.type}:${identity.value?.toLowerCase().trim()}`;
+    dbIdentityMap.set(key, identity);
+  }
+
+  // Get existing identities from Zendesk
+  const zendeskIdentities = await getUserIdentities(userId);
+  
+  // Build map of Zendesk identities
+  const zendeskIdentityMap = new Map();
+  for (const identity of zendeskIdentities) {
+    const key = `${identity.type}:${identity.value?.toLowerCase().trim()}`;
+    zendeskIdentityMap.set(key, identity);
+  }
+
+  // Step 1: Delete identities in Zendesk that are not in database
+  const identitiesToDelete = [];
+  for (const [key, zendeskIdentity] of zendeskIdentityMap.entries()) {
+    if (!dbIdentityMap.has(key)) {
+      identitiesToDelete.push(zendeskIdentity);
+    }
+  }
+
+  if (identitiesToDelete.length > 0) {
+    logger.info(`   🗑️  Deleting ${identitiesToDelete.length} identity(ies) from Zendesk that are not in database`);
+    for (const identity of identitiesToDelete) {
+      try {
+        await deleteUserIdentity(userId, identity.id);
+        logger.info(`   ✅ Deleted ${identity.type} identity ${identity.id} (${identity.value})`);
+      } catch (error) {
+        logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
+      }
+    }
+  }
+
+  // Step 2: Add identities in database that are not in Zendesk
+  const identitiesToAdd = [];
+  for (const [key, dbIdentity] of dbIdentityMap.entries()) {
+    if (!zendeskIdentityMap.has(key)) {
+      identitiesToAdd.push(dbIdentity);
+    }
+  }
+
+  if (identitiesToAdd.length > 0) {
+    logger.info(`   ➕ Adding ${identitiesToAdd.length} identity(ies) to Zendesk from database`);
+    for (const identity of identitiesToAdd) {
+      try {
+        await callZendesk(() =>
+          zendeskLimiter.schedule(() => getZendeskClient().post(`/users/${userId}/identities.json`, { identity }))
+        );
+        logger.info(`   ✅ Added ${identity.type}: ${identity.value}`);
+      } catch (err) {
+        const msg = err.response?.data || err.message;
+
+        if (isDuplicateError(err)) {
+          logger.info(
+            `   🔄 Duplicate ${identity.type} ${identity.value} detected, adding to contact_address`
+          );
+          await addToContactAddress(userId, identity.value);
+        } else {
+          logger.warn(`   ⚠️ Failed to add ${identity.value}: ${JSON.stringify(msg)}`);
+        }
+      }
+    }
+  }
+
+  if (identitiesToDelete.length === 0 && identitiesToAdd.length === 0) {
+    logger.debug(`   ✅ Zendesk identities already match database for user ${userId}`);
   }
 }
 
