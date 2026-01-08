@@ -32,7 +32,7 @@ export function extractAllEmails(user) {
   return Array.from(emails);
 }
 
-function extractAllPhoneNumbers(user) {
+export function extractAllPhoneNumbers(user) {
   const phones = new Set();
 
   if (user.phone) {

@@ -3,7 +3,7 @@ import { extractMappedFields, buildStorageKeys, hydrateMapping } from "../domain
 import { getDb } from "./db.api.js";
 import { fetchClientDetail, fetchCaregiverDetail, fetchClientStatusOnly, fetchCaregiverStatusOnly } from "../services/alayacare/alayacare.api.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
-import { getUserIdentities, deleteUserIdentity, getUser, updateUserCustomFields } from "../services/zendesk/zendesk.api.js";
+import { getUserIdentities, deleteUserIdentity, deleteUserPrimaryEmail, getUser, updateUserCustomFields } from "../services/zendesk/zendesk.api.js";
 import { extractAllPhoneNumbers, isAliasedEmail } from "./db.duplicate.repo.js";
 import { addIdentities } from "../services/zendesk/identitySync.js";
 
@@ -519,10 +519,13 @@ export async function processNonActiveUser(user) {
     const externalId = mappedPayload.external_id;
 
     // Step 1: Alias ALL emails (email field + identities)
+    // Track original emails before aliasing (needed to check against Zendesk primary email)
+    const originalEmails = new Set();
     const aliasedEmails = [];
     
     // Alias email field
     if (fields.email && !isAliasedEmail(fields.email)) {
+      originalEmails.add(fields.email.toLowerCase());
       const emailParts = fields.email.split("@");
       if (emailParts.length === 2) {
         fields.email = `${emailParts[0]}+${externalId}@${emailParts[1]}`;
@@ -552,6 +555,7 @@ export async function processNonActiveUser(user) {
     for (const identity of identities) {
       if (identity.type === "email" && identity.value) {
         if (!isAliasedEmail(identity.value)) {
+          originalEmails.add(identity.value.toLowerCase());
           const emailParts = identity.value.split("@");
           if (emailParts.length === 2) {
             const aliasedEmail = `${emailParts[0]}+${externalId}@${emailParts[1]}`;
@@ -583,10 +587,28 @@ export async function processNonActiveUser(user) {
       logger.info(`   📞 Moved ${allPhones.length} phone(s) to shared_phone_number: ${allPhones.join(", ")}`);
     }
 
-    // Step 3: Get identities from Zendesk and delete email/phone identities
-    logger.info(`   🔄 Getting identities from Zendesk for user ${zendeskUserId}...`);
+    // Step 3: Get user and identities from Zendesk, delete primary email and email/phone identities
+    logger.info(`   🔄 Getting user and identities from Zendesk for user ${zendeskUserId}...`);
+    const zendeskUser = await getUser(zendeskUserId);
     const zendeskIdentities = await getUserIdentities(zendeskUserId);
 
+    // Step 3a: Delete primary email if it matches any original email (before aliasing)
+    if (zendeskUser && zendeskUser.email) {
+      const zendeskPrimaryEmail = zendeskUser.email.toLowerCase();
+      if (originalEmails.has(zendeskPrimaryEmail)) {
+        logger.info(`   🗑️  Deleting primary email from Zendesk: ${zendeskUser.email} (matches original email before aliasing)`);
+        try {
+          await deleteUserPrimaryEmail(zendeskUserId);
+          logger.info(`   ✅ Deleted primary email: ${zendeskUser.email}`);
+        } catch (error) {
+          logger.error(`   ❌ Failed to delete primary email: ${error.message}`);
+        }
+      } else {
+        logger.debug(`   ℹ️  Primary email ${zendeskUser.email} doesn't match any original email, skipping deletion`);
+      }
+    }
+
+    // Step 3b: Delete all email and phone identities
     const identitiesToDelete = zendeskIdentities.filter(
       (identity) => identity.type === "email" || identity.type === "phone_number"
     );
@@ -653,11 +675,11 @@ export async function processNonActiveUser(user) {
 
     logger.info(`   ✅ Updated non-active user ${acId} in database`);
 
-    // Step 6: Update Zendesk user with aliased email and shared_phone_number field
+    // Step 6: Update Zendesk user with shared_phone_number field
     // Note: Email field in user object is read-only, so we update via custom field if needed
     // But we already added aliased emails as identities above
     // Update shared_phone_number custom field
-    const zendeskUser = await getUser(zendeskUserId);
+    // Reuse zendeskUser from Step 3 (we already fetched it earlier)
     if (zendeskUser) {
       await updateUserCustomFields(zendeskUserId, {
         ...zendeskUser.user_fields,

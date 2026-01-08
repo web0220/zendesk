@@ -73,6 +73,21 @@ export function deleteUserIdentity(userId, identityId) {
 }
 
 /**
+ * Delete the primary email from Zendesk user
+ * This is different from deleting an email identity - the primary email must be deleted via /email endpoint
+ * @param {number} userId - Zendesk user ID
+ * @returns {Promise<boolean>} True if successful
+ */
+export function deleteUserPrimaryEmail(userId) {
+  return zendeskRequest(async () => {
+    await zendeskLimiter.schedule(() => 
+      zendeskClient.delete(`/users/${userId}/email.json`)
+    );
+    return true;
+  });
+}
+
+/**
  * Search for Zendesk user by email address
  * @param {string} email - Email address to search for
  * @returns {Promise<Object|null>} User object or null if not found
