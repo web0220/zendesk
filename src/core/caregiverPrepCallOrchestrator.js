@@ -205,7 +205,6 @@ async function processCaregiver(caregiver, currentTime) {
               value: `new_cg_caregiver_${sourceAcId}`,
             });
           }
-
           const subject = `New caregiver prep call - ${caregiver.name}`;
           const commentBody = `New caregiver prep call
 
@@ -222,6 +221,7 @@ Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
             commentBody,
             tags: ["new_cg"],
             groupId: assigneeGroupId,
+            assigneeId: assigneeGroupId, // Set assignee_id in ticket payload
             customFields,
             caregiverName: caregiver.name,
             clientName,
@@ -304,6 +304,7 @@ Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
               commentBody,
               tags: ["new_cg-client_match"],
               groupId: assigneeGroupId,
+              assigneeId: assigneeGroupId, // Set assignee_id in ticket payload
               customFields,
               caregiverName: caregiver.name,
               clientName,

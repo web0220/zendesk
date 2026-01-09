@@ -198,6 +198,7 @@ export async function createPrivateTaskTicket({
         status: "new",
         requester_id: requesterId,
         due_at: dueAt,
+        assignee_id: assigneeId,
         comment: {
           body: commentBody,
           public: false, // Private comment
