@@ -65,3 +65,42 @@ export function getActivePremiumClients() {
   logger.info(`📋 Found ${clients.length} active premium clients for clinical monthly check-in`);
   return clients;
 }
+
+/**
+ * Get all active caregivers with source_ac_id for caregiver prep call tickets
+ * Returns all active caregivers with their source_ac_id (AlayaCare employee ID)
+ * 
+ * @returns {Array} Array of active caregiver records with source_ac_id and zendesk_user_id
+ */
+export function getActiveCaregiversForPrepCalls() {
+  const db = getDb();
+  const stmt = db.prepare(`
+    SELECT * FROM user_mappings 
+    WHERE user_type = 'caregiver'
+      AND caregiver_status = 'cg_active'
+      AND source_ac_id IS NOT NULL
+      AND source_ac_id != ''
+      AND zendesk_user_id IS NOT NULL
+    ORDER BY name ASC
+  `);
+  const caregivers = stmt.all().map(hydrateMapping);
+  logger.info(`📋 Found ${caregivers.length} active caregivers for prep call tickets`);
+  return caregivers;
+}
+
+/**
+ * Get client information by AlayaCare client ID (source_ac_id)
+ * @param {number|string} alayacareClientId - AlayaCare client ID
+ * @returns {Object|null} Client record or null if not found
+ */
+export function getClientByAlayacareId(alayacareClientId) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    SELECT * FROM user_mappings 
+    WHERE user_type = 'client'
+      AND source_ac_id = ?
+    LIMIT 1
+  `);
+  const client = stmt.get(String(alayacareClientId));
+  return client ? hydrateMapping(client) : null;
+}

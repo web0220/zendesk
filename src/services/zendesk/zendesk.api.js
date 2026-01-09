@@ -105,4 +105,20 @@ export function searchUserByEmail(email) {
   });
 }
 
+/**
+ * Search for Zendesk tickets using the search API
+ * @param {string} query - Zendesk search query (e.g., "type:ticket status<solved custom_field_123:value")
+ * @returns {Promise<Array>} Array of ticket objects
+ */
+export function searchTickets(query) {
+  return zendeskRequest(async () => {
+    const res = await zendeskLimiter.schedule(() =>
+      zendeskClient.get(`/search.json?query=${encodeURIComponent(query)}`)
+    );
+    const results = res.data?.results || [];
+    logger.debug(`🔍 Zendesk search query: "${query}" returned ${results.length} results`);
+    return results;
+  });
+}
+
 

@@ -11,7 +11,9 @@
     "recurring:coordination": "NODE_ENV=production node src/recurring.js --task=coordination",
     "recurring:concierge": "NODE_ENV=production node src/recurring.js --task=concierge",
     "recurring:premium": "NODE_ENV=production node src/recurring.js --task=premium",
-    "daily:alert": "NODE_ENV=production node src/dailyAlert.js"
+    "daily:alert": "NODE_ENV=production node src/dailyAlert.js",
+    "caregiver:prep": "NODE_ENV=production node src/caregiverPrepCall.js",
+    "test:visit-api": "node scripts/test_visit_api.js"
     },
   "keywords": [],
   "author": "",

@@ -1,0 +1,464 @@
+import { logger } from "../config/logger.js";
+import { getActiveCaregiversForPrepCalls, getClientByAlayacareId } from "../infra/db.recurring.repo.js";
+import { fetchScheduledVisits, fetchPastVisits } from "../services/alayacare/visit.api.js";
+import { searchTickets } from "../services/zendesk/zendesk.api.js";
+import { createPrivateTaskTicket, createTicketsBatch } from "../services/zendesk/ticket.js";
+import { runWithLimit } from "../utils/rateLimiter.js";
+
+// Zendesk custom field IDs from environment variables
+// These should be set in .env file
+const CG_PREP_FIELD_ID = process.env.ZENDESK_CG_PREP_FIELD_ID || null;
+const CG_PREP_DEDUP_KEY_FIELD_ID = process.env.ZENDESK_CG_PREP_DEDUP_KEY_FIELD_ID || null;
+
+/**
+ * Format date to MM/DD/YYYY
+ * @param {Date|string} date - Date object or ISO string
+ * @returns {string} Formatted date string
+ */
+function formatDateForDisplay(date) {
+  const d = typeof date === "string" ? new Date(date) : date;
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const year = d.getFullYear();
+  return `${month}/${day}/${year}`;
+}
+
+/**
+ * Calculate due date (day before the first shift)
+ * @param {Date|string} firstShiftDate - Date of first shift
+ * @returns {string} ISO 8601 date string for due date
+ */
+function calculateDueDate(firstShiftDate) {
+  const date = typeof firstShiftDate === "string" ? new Date(firstShiftDate) : firstShiftDate;
+  const dueDate = new Date(date);
+  dueDate.setDate(dueDate.getDate() - 1);
+  // Set to end of day (23:59:59) in EST, then convert to UTC
+  dueDate.setHours(23, 59, 59, 999);
+  return dueDate.toISOString();
+}
+
+/**
+ * Get assignee group ID from coordinator pod
+ * Maps coordinator_pod values to Zendesk group IDs
+ * @param {string} coordinatorPod - Coordinator pod name
+ * @returns {number|null} Zendesk group ID or null
+ */
+function getAssigneeGroupId(coordinatorPod) {
+  if (!coordinatorPod) {
+    return null;
+  }
+
+  // Map coordinator_pod to Zendesk group IDs
+  // This mapping should be configured in environment variables
+  // Example: ZENDESK_POD_GROUP_MAPPING='{"Pod A": 123456, "Pod B": 123457}'
+  const podToGroupMapping = process.env.ZENDESK_POD_GROUP_MAPPING 
+    ? JSON.parse(process.env.ZENDESK_POD_GROUP_MAPPING)
+    : {};
+  
+  const groupId = podToGroupMapping[coordinatorPod];
+  if (groupId) {
+    logger.debug(`   📋 Mapped coordinator pod "${coordinatorPod}" to Zendesk group ${groupId}`);
+  } else {
+    logger.warn(`   ⚠️  No Zendesk group mapping found for coordinator pod "${coordinatorPod}"`);
+  }
+  
+  return groupId || null;
+}
+
+/**
+ * Check if a ticket exists for new caregiver prep call
+ * @param {number} alayacareEmployeeId - Caregiver's AlayaCare employee ID
+ * @returns {Promise<boolean>} True if ticket exists
+ */
+async function checkNewCaregiverTicketExists(alayacareEmployeeId) {
+  if (!CG_PREP_DEDUP_KEY_FIELD_ID) {
+    logger.warn("⚠️ ZENDESK_CG_PREP_DEDUP_KEY_FIELD_ID not configured, skipping duplicate check");
+    return false;
+  }
+
+  const dedupValue = `new_cg_caregiver_${alayacareEmployeeId}`;
+  const query = `type:ticket status<solved custom_field_${CG_PREP_DEDUP_KEY_FIELD_ID}:${dedupValue}`;
+  
+  try {
+    const results = await searchTickets(query);
+    return results.length > 0;
+  } catch (error) {
+    logger.error(`❌ Failed to search for existing new caregiver ticket: ${error.message}`);
+    return false; // Assume no ticket exists on error to avoid blocking creation
+  }
+}
+
+/**
+ * Check if a ticket exists for new caregiver-client match prep call
+ * @param {number} alayacareEmployeeId - Caregiver's AlayaCare employee ID
+ * @param {number} alayacareClientId - Client's AlayaCare client ID
+ * @returns {Promise<boolean>} True if ticket exists
+ */
+async function checkNewCaregiverClientMatchTicketExists(alayacareEmployeeId, alayacareClientId) {
+  if (!CG_PREP_DEDUP_KEY_FIELD_ID) {
+    logger.warn("⚠️ ZENDESK_CG_PREP_DEDUP_KEY_FIELD_ID not configured, skipping duplicate check");
+    return false;
+  }
+
+  const dedupValue = `new_cg_client_match_caregiver_${alayacareEmployeeId}_client_${alayacareClientId}`;
+  const query = `type:ticket status<solved custom_field_${CG_PREP_DEDUP_KEY_FIELD_ID}:${dedupValue}`;
+  
+  try {
+    const results = await searchTickets(query);
+    return results.length > 0;
+  } catch (error) {
+    logger.error(`❌ Failed to search for existing caregiver-client match ticket: ${error.message}`);
+    return false; // Assume no ticket exists on error to avoid blocking creation
+  }
+}
+
+/**
+ * Process a single caregiver for prep call tickets
+ * @param {Object} caregiver - Caregiver record from database
+ * @param {Date} currentTime - Current time
+ * @returns {Promise<Object>} Result object with created tickets
+ */
+async function processCaregiver(caregiver, currentTime) {
+  const result = {
+    caregiverId: caregiver.ac_id,
+    caregiverName: caregiver.name,
+    sourceAcId: caregiver.source_ac_id,
+    newCaregiverTickets: [],
+    newClientMatchTickets: [],
+    errors: [],
+  };
+
+  try {
+    const sourceAcId = Number(caregiver.source_ac_id);
+    if (!sourceAcId) {
+      logger.warn(`⚠️ Skipping caregiver ${caregiver.ac_id}: invalid source_ac_id`);
+      result.errors.push("Invalid source_ac_id");
+      return result;
+    }
+
+    // Phase 4-5: Fetch scheduled visits (next 5 days)
+    logger.debug(`📅 Fetching scheduled visits for caregiver ${caregiver.name} (${sourceAcId})`);
+    const scheduledVisitsRaw = await fetchScheduledVisits(sourceAcId, currentTime);
+    
+    if (!scheduledVisitsRaw || scheduledVisitsRaw.length === 0) {
+      logger.debug(`   ℹ️  No scheduled visits found for caregiver ${caregiver.name}`);
+      return result;
+    }
+
+    // Extract scheduled visit data
+    const scheduledVisits = scheduledVisitsRaw.map((visit) => ({
+      alayacare_employee_id: visit.alayacare_employee_id,
+      alayacare_client_id: visit.alayacare_client_id,
+      start_at: visit.start_at,
+      end_at: visit.end_at,
+    }));
+
+    // Phase 6-7: Fetch past visits
+    logger.debug(`📅 Fetching past visits for caregiver ${caregiver.name} (${sourceAcId})`);
+    const pastVisitsRaw = await fetchPastVisits(sourceAcId, currentTime);
+    
+    // Extract past visit data
+    const pastVisits = pastVisitsRaw.map((visit) => ({
+      alayacare_employee_id: visit.alayacare_employee_id,
+      alayacare_client_id: visit.alayacare_client_id,
+      start_at: visit.start_at,
+      end_at: visit.end_at,
+    }));
+
+    // Phase 8-10: Check for new caregiver (first shift with Alvita Care)
+    if (pastVisits.length === 0) {
+      logger.info(`🆕 New caregiver detected: ${caregiver.name} (${sourceAcId})`);
+      
+      // Find earliest scheduled visit
+      if (scheduledVisits.length > 0) {
+        const earliestVisit = scheduledVisits.reduce((earliest, visit) => {
+          const visitDate = new Date(visit.start_at);
+          const earliestDate = new Date(earliest.start_at);
+          return visitDate < earliestDate ? visit : earliest;
+        });
+
+        // Phase 9: Check if ticket already exists
+        const ticketExists = await checkNewCaregiverTicketExists(sourceAcId);
+        
+        if (!ticketExists) {
+          // Phase 10: Create new caregiver prep call ticket
+          const client = getClientByAlayacareId(earliestVisit.alayacare_client_id);
+          const clientName = client ? client.name : `Client ${earliestVisit.alayacare_client_id}`;
+          const firstShiftDate = new Date(earliestVisit.start_at);
+          const dueDate = calculateDueDate(firstShiftDate);
+          
+          // Get assignee group from client's coordinator pod
+          const assigneeGroupId = client?.coordinator_pod 
+            ? getAssigneeGroupId(client.coordinator_pod)
+            : null;
+
+          const customFields = [];
+          if (CG_PREP_FIELD_ID) {
+            customFields.push({
+              id: Number(CG_PREP_FIELD_ID),
+              value: "cg_prep_-_new_cg_coordination",
+            });
+          }
+          if (CG_PREP_DEDUP_KEY_FIELD_ID) {
+            customFields.push({
+              id: Number(CG_PREP_DEDUP_KEY_FIELD_ID),
+              value: `new_cg_caregiver_${sourceAcId}`,
+            });
+          }
+
+          const subject = `New caregiver prep call - ${caregiver.name}`;
+          const commentBody = `New caregiver prep call
+
+CG name: ${caregiver.name}
+
+Client: ${clientName}
+
+Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
+
+          result.newCaregiverTickets.push({
+            requesterId: caregiver.zendesk_user_id,
+            subject,
+            dueAt: dueDate,
+            commentBody,
+            tags: ["new_cg"],
+            groupId: assigneeGroupId,
+            customFields,
+            caregiverName: caregiver.name,
+            clientName,
+            firstShiftDate: formatDateForDisplay(firstShiftDate),
+          });
+        } else {
+          logger.debug(`   ℹ️  Ticket already exists for new caregiver ${caregiver.name}`);
+        }
+      }
+    }
+
+    // Phase 11-13: Check for new caregiver-client matches
+    if (pastVisits.length > 0) {
+      // Get unique client IDs from scheduled visits
+      const uniqueClientIds = [...new Set(scheduledVisits.map((v) => v.alayacare_client_id))];
+
+      for (const clientId of uniqueClientIds) {
+        // Check if caregiver has worked with this client before
+        const hasWorkedWithClient = pastVisits.some(
+          (visit) => visit.alayacare_client_id === clientId
+        );
+
+        if (!hasWorkedWithClient) {
+          // This is a new caregiver-client match
+          logger.info(
+            `🆕 New caregiver-client match: ${caregiver.name} (${sourceAcId}) with client ${clientId}`
+          );
+
+          // Check if ticket already exists
+          const ticketExists = await checkNewCaregiverClientMatchTicketExists(sourceAcId, clientId);
+
+          if (!ticketExists) {
+            // Find the earliest scheduled visit with this client
+            const clientVisits = scheduledVisits.filter(
+              (visit) => visit.alayacare_client_id === clientId
+            );
+            const earliestClientVisit = clientVisits.reduce((earliest, visit) => {
+              const visitDate = new Date(visit.start_at);
+              const earliestDate = new Date(earliest.start_at);
+              return visitDate < earliestDate ? visit : earliest;
+            });
+
+            const client = getClientByAlayacareId(clientId);
+            const clientName = client ? client.name : `Client ${clientId}`;
+            const firstShiftDate = new Date(earliestClientVisit.start_at);
+            const dueDate = calculateDueDate(firstShiftDate);
+
+            // Get assignee group from client's coordinator pod
+            const assigneeGroupId = client?.coordinator_pod
+              ? getAssigneeGroupId(client.coordinator_pod)
+              : null;
+
+            const customFields = [];
+            if (CG_PREP_FIELD_ID) {
+              customFields.push({
+                id: Number(CG_PREP_FIELD_ID),
+                value: "cg_prep_-_new_cg-client_match_coordination",
+              });
+            }
+            if (CG_PREP_DEDUP_KEY_FIELD_ID) {
+              customFields.push({
+                id: Number(CG_PREP_DEDUP_KEY_FIELD_ID),
+                value: `new_cg_client_match_caregiver_${sourceAcId}_client_${clientId}`,
+              });
+            }
+
+            const subject = `New caregiver-client match prep call - ${caregiver.name}`;
+            const commentBody = `New caregiver-client match prep call
+
+CG name: ${caregiver.name}
+
+Client name: ${clientName}
+
+Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
+
+            result.newClientMatchTickets.push({
+              requesterId: caregiver.zendesk_user_id,
+              subject,
+              dueAt: dueDate,
+              commentBody,
+              tags: ["new_cg-client_match"],
+              groupId: assigneeGroupId,
+              customFields,
+              caregiverName: caregiver.name,
+              clientName,
+              firstShiftDate: formatDateForDisplay(firstShiftDate),
+            });
+          } else {
+            logger.debug(
+              `   ℹ️  Ticket already exists for caregiver-client match: ${caregiver.name} with client ${clientId}`
+            );
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.error(`❌ Error processing caregiver ${caregiver.name}: ${error.message}`);
+    result.errors.push(error.message);
+  }
+
+  return result;
+}
+
+/**
+ * Main orchestrator function for caregiver prep call tickets
+ * @returns {Promise<Object>} Summary of ticket creation results
+ */
+export async function runCaregiverPrepCallTickets() {
+  const startedAt = new Date().toISOString();
+  logger.info("═══════════════════════════════════════════════════════════");
+  logger.info("📋 Caregiver Prep Call Ticket Job");
+  logger.info("═══════════════════════════════════════════════════════════");
+  logger.info(`🕒 Job started at ${startedAt}`);
+
+  const currentTime = new Date();
+
+  // Check required configuration
+  if (!CG_PREP_FIELD_ID) {
+    logger.warn("⚠️ ZENDESK_CG_PREP_FIELD_ID not configured");
+  }
+  if (!CG_PREP_DEDUP_KEY_FIELD_ID) {
+    logger.warn("⚠️ ZENDESK_CG_PREP_DEDUP_KEY_FIELD_ID not configured");
+  }
+
+  const results = {
+    startedAt,
+    finishedAt: null,
+    totalCaregivers: 0,
+    newCaregiverTickets: {
+      total: 0,
+      created: 0,
+      failed: 0,
+    },
+    newClientMatchTickets: {
+      total: 0,
+      created: 0,
+      failed: 0,
+    },
+    errors: [],
+  };
+
+  try {
+    // Phase 2: Fetch all active caregivers
+    logger.info("📋 Phase 2: Fetching active caregivers from database...");
+    const caregivers = getActiveCaregiversForPrepCalls();
+    results.totalCaregivers = caregivers.length;
+
+    if (caregivers.length === 0) {
+      logger.info("✅ No active caregivers found. Skipping prep call tickets.");
+      results.finishedAt = new Date().toISOString();
+      return results;
+    }
+
+    logger.info(`📊 Found ${caregivers.length} active caregivers to process`);
+
+    // Phase 3: Process each caregiver
+    logger.info("📋 Phase 3: Processing caregivers...");
+    const CAREGIVER_CONCURRENCY = Number(process.env.CAREGIVER_PREP_CALL_CONCURRENCY) || 5;
+    
+    const processTasks = caregivers.map((caregiver) => async () => 
+      processCaregiver(caregiver, currentTime)
+    );
+
+    const caregiverResults = await runWithLimit(processTasks, CAREGIVER_CONCURRENCY);
+
+    // Collect all tickets to create
+    const newCaregiverTicketConfigs = [];
+    const newClientMatchTicketConfigs = [];
+
+    for (const caregiverResult of caregiverResults) {
+      if (caregiverResult.errors.length > 0) {
+        results.errors.push({
+          caregiver: caregiverResult.caregiverName,
+          errors: caregiverResult.errors,
+        });
+      }
+
+      newCaregiverTicketConfigs.push(...caregiverResult.newCaregiverTickets);
+      newClientMatchTicketConfigs.push(...caregiverResult.newClientMatchTickets);
+    }
+
+    results.newCaregiverTickets.total = newCaregiverTicketConfigs.length;
+    results.newClientMatchTickets.total = newClientMatchTicketConfigs.length;
+
+    logger.info(
+      `📦 Preparing to create ${newCaregiverTicketConfigs.length} new caregiver tickets and ${newClientMatchTicketConfigs.length} new client match tickets`
+    );
+
+    // Create tickets in batches
+    const TICKET_CONCURRENCY = Number(process.env.ZENDESK_TICKET_CONCURRENCY) || 5;
+
+    if (newCaregiverTicketConfigs.length > 0) {
+      logger.info("📋 Creating new caregiver prep call tickets...");
+      const newCaregiverResults = await createTicketsBatch(
+        newCaregiverTicketConfigs,
+        TICKET_CONCURRENCY
+      );
+      results.newCaregiverTickets.created = newCaregiverResults.filter(
+        (r) => r.success && r.ticket
+      ).length;
+      results.newCaregiverTickets.failed = newCaregiverResults.filter((r) => !r.success).length;
+    }
+
+    if (newClientMatchTicketConfigs.length > 0) {
+      logger.info("📋 Creating new caregiver-client match prep call tickets...");
+      const newClientMatchResults = await createTicketsBatch(
+        newClientMatchTicketConfigs,
+        TICKET_CONCURRENCY
+      );
+      results.newClientMatchTickets.created = newClientMatchResults.filter(
+        (r) => r.success && r.ticket
+      ).length;
+      results.newClientMatchTickets.failed = newClientMatchResults.filter(
+        (r) => !r.success
+      ).length;
+    }
+
+    results.finishedAt = new Date().toISOString();
+
+    // Final summary
+    logger.info("═══════════════════════════════════════════════════════════");
+    logger.info("📊 CAREGIVER PREP CALL TICKET JOB SUMMARY");
+    logger.info("═══════════════════════════════════════════════════════════");
+    logger.info(`   📋 Total caregivers processed: ${results.totalCaregivers}`);
+    logger.info(`   🆕 New caregiver tickets: ${results.newCaregiverTickets.created} created, ${results.newCaregiverTickets.failed} failed`);
+    logger.info(`   🔗 New client match tickets: ${results.newClientMatchTickets.created} created, ${results.newClientMatchTickets.failed} failed`);
+    logger.info(`   ⏱️  Duration: ${new Date(results.finishedAt) - new Date(results.startedAt)}ms`);
+    if (results.errors.length > 0) {
+      logger.warn(`   ⚠️  Errors: ${results.errors.length} caregivers had errors`);
+    }
+    logger.info("═══════════════════════════════════════════════════════════");
+
+    return results;
+  } catch (error) {
+    results.finishedAt = new Date().toISOString();
+    logger.error(`❌ Caregiver prep call ticket job failed: ${error.message}`, error);
+    throw error;
+  }
+}
+

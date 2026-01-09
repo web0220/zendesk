@@ -171,6 +171,9 @@ export async function createPrivateTaskTicket({
   contactCategoryFieldId = null,
   commentBody = "Automated recurring check-in ticket",
   assigneeId = null,
+  groupId = null,
+  tags = null,
+  customFields = [],
 }) {
   if (!requesterId || !subject || !dueAt) {
     logger.error("❌ Missing required fields for ticket creation");
@@ -179,9 +182,9 @@ export async function createPrivateTaskTicket({
 
   return callZendesk(async () => {
     // Build custom fields array if contact category is provided
-    const customFields = [];
+    const ticketCustomFields = [...customFields];
     if (contactCategoryValue && contactCategoryFieldId) {
-      customFields.push({
+      ticketCustomFields.push({
         id: contactCategoryFieldId,
         value: contactCategoryValue,
       });
@@ -208,14 +211,24 @@ export async function createPrivateTaskTicket({
     // Note: This may not prevent all Zendesk triggers/automations, but prevents default notifications
     ticketPayload.skip_notification = true;
 
-    // Add assignee if provided
+    // Add assignee if provided (for individual user assignment)
     if (assigneeId) {
       ticketPayload.ticket.assignee_id = assigneeId;
     }
 
+    // Add group if provided (for group assignment)
+    if (groupId) {
+      ticketPayload.ticket.group_id = groupId;
+    }
+
+    // Add tags if provided
+    if (tags && Array.isArray(tags) && tags.length > 0) {
+      ticketPayload.ticket.tags = tags;
+    }
+
     // Add custom fields if provided
-    if (customFields.length > 0) {
-      ticketPayload.ticket.custom_fields = customFields;
+    if (ticketCustomFields.length > 0) {
+      ticketPayload.ticket.custom_fields = ticketCustomFields;
     }
 
     try {
