@@ -153,17 +153,19 @@ async function processCaregiver(caregiver, currentTime) {
       end_at: visit.end_at,
     }));
 
-    // Phase 6-7: Fetch past visits
+    // Phase 6-7: Fetch past visits (non-cancelled only, from 2022-01-01 to current time)
     logger.debug(`📅 Fetching past visits for caregiver ${caregiver.name} (${sourceAcId})`);
     const pastVisitsRaw = await fetchPastVisits(sourceAcId, currentTime);
     
-    // Extract past visit data
+    // Extract past visit data (already filtered for non-cancelled)
     const pastVisits = pastVisitsRaw.map((visit) => ({
       alayacare_employee_id: visit.alayacare_employee_id,
       alayacare_client_id: visit.alayacare_client_id,
       start_at: visit.start_at,
       end_at: visit.end_at,
     }));
+
+    logger.debug(`   Found ${pastVisits.length} non-cancelled past visits`);
 
     // Phase 8-10: Check for new caregiver (first shift with Alvita Care)
     if (pastVisits.length === 0) {
@@ -240,9 +242,12 @@ Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
 
       for (const clientId of uniqueClientIds) {
         // Check if caregiver has worked with this client before
-        const hasWorkedWithClient = pastVisits.some(
-          (visit) => visit.alayacare_client_id === clientId
-        );
+        // Convert both to numbers for reliable comparison (handles string vs number mismatch)
+        const clientIdNum = Number(clientId);
+        const hasWorkedWithClient = pastVisits.some((visit) => {
+          const visitClientIdNum = Number(visit.alayacare_client_id);
+          return visitClientIdNum === clientIdNum;
+        });
 
         if (!hasWorkedWithClient) {
           // This is a new caregiver-client match

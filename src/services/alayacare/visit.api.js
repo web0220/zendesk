@@ -128,20 +128,23 @@ export async function fetchScheduledVisits(alayacare_employee_id, currentTime = 
 }
 
 /**
- * Fetch past visits for a caregiver (from 2022-01-10 to current time)
+ * Fetch past visits for a caregiver (from 2022-01-01 to current time, non-cancelled only)
  * @param {number} alayacare_employee_id - Caregiver's source_ac_id
  * @param {Date} currentTime - Current time (defaults to now)
- * @returns {Promise<Array>} Array of past visit objects
+ * @returns {Promise<Array>} Array of past visit objects (non-cancelled only)
  */
 export async function fetchPastVisits(alayacare_employee_id, currentTime = new Date()) {
-  const startAt = "2022-01-10T00:00:00";
+  const startAt = "2022-01-01T00:00:00";
   const endAt = formatDateForAPI(currentTime);
 
-  return fetchVisits({
+  const allVisits = await fetchVisits({
     alayacare_employee_id,
     start_at: startAt,
     end_at: endAt,
     cancelled: false,
   });
+
+  // Filter out cancelled visits (double-check, in case API doesn't filter properly)
+  return allVisits.filter((visit) => !visit.cancelled);
 }
 
