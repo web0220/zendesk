@@ -190,6 +190,14 @@ export async function createPrivateTaskTicket({
       });
     }
 
+    // Format comment body for HTML display
+    // If commentBody already contains HTML tags, use it as-is
+    // Otherwise, convert line breaks to HTML <br> tags for better formatting
+    const hasHtmlTags = /<[a-z][\s\S]*>/i.test(commentBody);
+    const formattedHtmlBody = hasHtmlTags 
+      ? commentBody 
+      : commentBody.replace(/\n/g, '<br>');
+
     const ticketPayload = {
       ticket: {
         subject,
@@ -198,11 +206,10 @@ export async function createPrivateTaskTicket({
         status: "new",
         requester_id: requesterId,
         due_at: dueAt,
-        assignee_id: assigneeId,
         comment: {
           body: commentBody,
           public: false, // Private comment
-          html_body: commentBody, // HTML formatted body for better rendering
+          html_body: formattedHtmlBody, // HTML formatted body with proper line breaks
         },
       },
     };
@@ -212,9 +219,12 @@ export async function createPrivateTaskTicket({
     // Note: This may not prevent all Zendesk triggers/automations, but prevents default notifications
     ticketPayload.skip_notification = true;
 
-    // Add assignee if provided (for individual user assignment)
+    // Explicitly set assignee_id: if assigneeId is provided, use it; otherwise set to null to prevent auto-assignment
+    // Note: Zendesk automation rules may still override this, but explicitly setting null helps prevent default behavior
     if (assigneeId) {
       ticketPayload.ticket.assignee_id = assigneeId;
+    } else {
+      ticketPayload.ticket.assignee_id = null;
     }
 
     // Add group if provided (for group assignment)

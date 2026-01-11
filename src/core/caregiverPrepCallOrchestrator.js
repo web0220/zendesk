@@ -208,13 +208,13 @@ async function processCaregiver(caregiver, currentTime) {
             });
           }
           const subject = `New caregiver prep call - ${caregiver.name}`;
-          const commentBody = `New caregiver prep call
+          const commentBody = `<h3 style="margin-top: 0;">New caregiver prep call</h3><br>
 
-CG name: ${caregiver.name}
+<strong>CG name:</strong> ${caregiver.name}<br><br>
 
-Client: ${clientName}
+<strong>Client:</strong> ${clientName}<br><br>
 
-Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
+<strong>Date of first shift:</strong> ${formatDateForDisplay(firstShiftDate)}`;
 
           result.newCaregiverTickets.push({
             requesterId: caregiver.zendesk_user_id,
@@ -223,7 +223,6 @@ Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
             commentBody,
             tags: ["new_cg"],
             groupId: assigneeGroupId,
-            assigneeId: assigneeGroupId, // Set assignee_id in ticket payload
             customFields,
             caregiverName: caregiver.name,
             clientName,
@@ -294,13 +293,13 @@ Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
             }
 
             const subject = `New caregiver-client match prep call - ${caregiver.name}`;
-            const commentBody = `New caregiver-client match prep call
+            const commentBody = `<h3 style="margin-top: 0;">New caregiver-client match prep call</h3><br>
 
-CG name: ${caregiver.name}
+<strong>CG name:</strong> ${caregiver.name}<br><br>
 
-Client name: ${clientName}
+<strong>Client name:</strong> ${clientName}<br><br>
 
-Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
+<strong>Date of first shift:</strong> ${formatDateForDisplay(firstShiftDate)}`;
 
             result.newClientMatchTickets.push({
               requesterId: caregiver.zendesk_user_id,
@@ -309,7 +308,6 @@ Date of first shift: ${formatDateForDisplay(firstShiftDate)}`;
               commentBody,
               tags: ["new_cg-client_match"],
               groupId: assigneeGroupId,
-              assigneeId: assigneeGroupId, // Set assignee_id in ticket payload
               customFields,
               caregiverName: caregiver.name,
               clientName,
