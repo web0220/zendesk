@@ -10,6 +10,12 @@ import { runWithLimit } from "../utils/rateLimiter.js";
 const CG_PREP_FIELD_ID = process.env.ZENDESK_CG_PREP_FIELD_ID || null;
 const CG_PREP_DEDUP_KEY_FIELD_ID = process.env.ZENDESK_CG_PREP_DEDUP_KEY_FIELD_ID || null;
 
+// Excluded caregiver IDs (fake accounts)
+const EXCLUDED_CAREGIVER_IDS = [618, 619, 3088, 4844];
+
+// Excluded client IDs (fake accounts)
+const EXCLUDED_CLIENT_IDS = [1096, 1320, 5265];
+
 /**
  * Format date to MM/DD/YYYY
  * @param {Date|string} date - Date object or ISO string
@@ -200,8 +206,13 @@ async function processCaregiver(caregiver, currentDay) {
         const ticketExists = await checkNewCaregiverTicketExists(sourceAcId);
         
         if (!ticketExists) {
-          // Phase 10: Create new caregiver prep call ticket (type 1) for first client
-          const client = getClientByAlayacareId(firstClientId);
+          // Check if client is excluded (fake account)
+          const firstClientIdNum = Number(firstClientId);
+          if (EXCLUDED_CLIENT_IDS.includes(firstClientIdNum)) {
+            logger.debug(`   ⏭️  Skipping ticket creation for client ${firstClientIdNum} - fake account`);
+          } else {
+            // Phase 10: Create new caregiver prep call ticket (type 1) for first client
+            const client = getClientByAlayacareId(firstClientId);
           const clientName = client ? client.name : `Client ${firstClientId}`;
           const firstShiftDate = new Date(earliestVisit.start_at);
           const dueDate = calculateDueDate(firstShiftDate);
@@ -245,6 +256,7 @@ async function processCaregiver(caregiver, currentDay) {
             clientName,
             firstShiftDate: formatDateForDisplay(firstShiftDate),
           });
+          }
         } else {
           logger.debug(`   ℹ️  Ticket already exists for new caregiver ${caregiver.name}`);
         }
@@ -262,6 +274,13 @@ async function processCaregiver(caregiver, currentDay) {
 
         // Create type 2 tickets for other clients
         for (const clientId of otherClientIds) {
+          // Check if client is excluded (fake account)
+          const clientIdNum = Number(clientId);
+          if (EXCLUDED_CLIENT_IDS.includes(clientIdNum)) {
+            logger.debug(`   ⏭️  Skipping ticket creation for client ${clientIdNum} - fake account`);
+            continue;
+          }
+
           // Check if ticket already exists
           const ticketExists = await checkNewCaregiverClientMatchTicketExists(sourceAcId, clientId);
 
@@ -340,9 +359,15 @@ async function processCaregiver(caregiver, currentDay) {
       const uniqueClientIds = [...new Set(scheduledVisits.map((v) => v.alayacare_client_id))];
 
       for (const clientId of uniqueClientIds) {
+        // Check if client is excluded (fake account)
+        const clientIdNum = Number(clientId);
+        if (EXCLUDED_CLIENT_IDS.includes(clientIdNum)) {
+          logger.debug(`   ⏭️  Skipping ticket creation for client ${clientIdNum} - fake account`);
+          continue;
+        }
+
         // Check if caregiver has worked with this client before
         // Convert both to numbers for reliable comparison (handles string vs number mismatch)
-        const clientIdNum = Number(clientId);
         const hasWorkedWithClient = pastVisits.some((visit) => {
           const visitClientIdNum = Number(visit.alayacare_client_id);
           return visitClientIdNum === clientIdNum;
@@ -481,7 +506,23 @@ export async function runCaregiverPrepCallTickets() {
   try {
     // Phase 2: Fetch all active caregivers
     logger.info("📋 Phase 2: Fetching active caregivers from database...");
-    const caregivers = getActiveCaregiversForPrepCalls();
+    const allCaregivers = getActiveCaregiversForPrepCalls();
+    
+    // Filter out excluded caregiver IDs (fake accounts)
+    const caregivers = allCaregivers.filter((caregiver) => {
+      const sourceAcId = Number(caregiver.source_ac_id);
+      const isExcluded = EXCLUDED_CAREGIVER_IDS.includes(sourceAcId);
+      if (isExcluded) {
+        logger.debug(`   ⏭️  Excluding caregiver ${caregiver.name} (source_ac_id: ${sourceAcId}) - fake account`);
+      }
+      return !isExcluded;
+    });
+    
+    const excludedCount = allCaregivers.length - caregivers.length;
+    if (excludedCount > 0) {
+      logger.info(`   ⏭️  Excluded ${excludedCount} caregiver(s) (fake accounts: ${EXCLUDED_CAREGIVER_IDS.join(", ")})`);
+    }
+    
     results.totalCaregivers = caregivers.length;
 
     if (caregivers.length === 0) {
