@@ -28,10 +28,10 @@ function initializePreparedStatements() {
     INSERT INTO user_mappings (
       ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
       user_type, source_ac_id, coordinator_pod, case_rating, client_status, clinical_rn_manager,
-      sales_rep, caregiver_status, department, market, identities, zendesk_primary,
+      sales_rep, scheduling_preferences, caregiver_status, department, market, identities, zendesk_primary,
       shared_phone_number, current_active, last_synced_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ac_id) DO UPDATE SET
       -- ac_id is the PRIMARY KEY - NEVER update it (used to identify the row)
       -- Always update these fields from fresh API data (even for already-synced users)
@@ -54,6 +54,7 @@ function initializePreparedStatements() {
       client_status = excluded.client_status,
       clinical_rn_manager = excluded.clinical_rn_manager,
       sales_rep = excluded.sales_rep,
+      scheduling_preferences = excluded.scheduling_preferences,
       caregiver_status = excluded.caregiver_status,
       department = excluded.department,
       market = excluded.market,
@@ -127,14 +128,15 @@ function saveMappedDataInternal(mappedData) {
     fields.client_status,     // 12. client_status
     fields.clinical_rn_manager, // 13. clinical_rn_manager
     fields.sales_rep,         // 14. sales_rep
-    fields.caregiver_status,  // 15. caregiver_status
-    fields.department,        // 16. department
-    fields.market,            // 17. market
-    fields.identities,        // 18. identities
-    fields.zendesk_primary,   // 19. zendesk_primary
-    null,                     // 20. shared_phone_number
-    1,                        // 21. current_active (set to 1 for active users)
-    null,                     // 22. last_synced_at (NULL for new inserts)
+    fields.scheduling_preferences, // 15. scheduling_preferences
+    fields.caregiver_status,  // 16. caregiver_status
+    fields.department,        // 17. department
+    fields.market,            // 18. market
+    fields.identities,        // 19. identities
+    fields.zendesk_primary,   // 20. zendesk_primary
+    null,                     // 21. shared_phone_number
+    1,                        // 22. current_active (set to 1 for active users)
+    null,                     // 23. last_synced_at (NULL for new inserts)
     // created_at and updated_at are CURRENT_TIMESTAMP in SQL (positions 23, 24)
   );
   // logger.debug(

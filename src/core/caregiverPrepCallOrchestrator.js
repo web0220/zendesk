@@ -186,21 +186,23 @@ async function processCaregiver(caregiver, currentDay) {
     if (pastVisits.length === 0) {
       logger.info(`🆕 New caregiver detected: ${caregiver.name} (${sourceAcId})`);
       
-      // Find earliest scheduled visit
       if (scheduledVisits.length > 0) {
+        // Find earliest scheduled visit for type 1 ticket
         const earliestVisit = scheduledVisits.reduce((earliest, visit) => {
           const visitDate = new Date(visit.start_at);
           const earliestDate = new Date(earliest.start_at);
           return visitDate < earliestDate ? visit : earliest;
         });
 
-        // Phase 9: Check if ticket already exists
+        const firstClientId = earliestVisit.alayacare_client_id;
+
+        // Phase 9: Check if type 1 ticket already exists
         const ticketExists = await checkNewCaregiverTicketExists(sourceAcId);
         
         if (!ticketExists) {
-          // Phase 10: Create new caregiver prep call ticket
-          const client = getClientByAlayacareId(earliestVisit.alayacare_client_id);
-          const clientName = client ? client.name : `Client ${earliestVisit.alayacare_client_id}`;
+          // Phase 10: Create new caregiver prep call ticket (type 1) for first client
+          const client = getClientByAlayacareId(firstClientId);
+          const clientName = client ? client.name : `Client ${firstClientId}`;
           const firstShiftDate = new Date(earliestVisit.start_at);
           const dueDate = calculateDueDate(firstShiftDate);
           
@@ -245,6 +247,89 @@ async function processCaregiver(caregiver, currentDay) {
           });
         } else {
           logger.debug(`   ℹ️  Ticket already exists for new caregiver ${caregiver.name}`);
+        }
+
+        // For new caregivers, also check for other clients in scheduled visits
+        // Create type 2 tickets (new caregiver-client match) for all other unique clients
+        const uniqueClientIds = [...new Set(scheduledVisits.map((v) => v.alayacare_client_id))];
+        const otherClientIds = uniqueClientIds.filter((clientId) => {
+          const clientIdNum = Number(clientId);
+          const firstClientIdNum = Number(firstClientId);
+          return clientIdNum !== firstClientIdNum;
+        });
+
+        logger.debug(`   Found ${otherClientIds.length} other unique client(s) in scheduled visits for new caregiver`);
+
+        // Create type 2 tickets for other clients
+        for (const clientId of otherClientIds) {
+          // Check if ticket already exists
+          const ticketExists = await checkNewCaregiverClientMatchTicketExists(sourceAcId, clientId);
+
+          if (!ticketExists) {
+            // Find the earliest scheduled visit with this client
+            const clientVisits = scheduledVisits.filter(
+              (visit) => visit.alayacare_client_id === clientId
+            );
+            const earliestClientVisit = clientVisits.reduce((earliest, visit) => {
+              const visitDate = new Date(visit.start_at);
+              const earliestDate = new Date(earliest.start_at);
+              return visitDate < earliestDate ? visit : earliest;
+            });
+
+            const client = getClientByAlayacareId(clientId);
+            const clientName = client ? client.name : `Client ${clientId}`;
+            const firstShiftDate = new Date(earliestClientVisit.start_at);
+            const dueDate = calculateDueDate(firstShiftDate);
+
+            // Get assignee group from client's coordinator pod
+            const assigneeGroupId = client?.coordinator_pod
+              ? getAssigneeGroupId(client.coordinator_pod)
+              : null;
+
+            const customFields = [];
+            if (CG_PREP_FIELD_ID) {
+              customFields.push({
+                id: Number(CG_PREP_FIELD_ID),
+                value: "cg_prep_-_new_cg-client_match_coordination",
+              });
+            }
+            if (CG_PREP_DEDUP_KEY_FIELD_ID) {
+              customFields.push({
+                id: Number(CG_PREP_DEDUP_KEY_FIELD_ID),
+                value: `new_cg_client_match_caregiver_${sourceAcId}_client_${clientId}`,
+              });
+            }
+
+            const subject = `New caregiver-client match prep call - ${caregiver.name}`;
+            const commentBody = `<h3 style="margin-top: 0;">New caregiver-client match prep call</h3><br>
+
+<strong>CG name:</strong> ${caregiver.name}<br><br>
+
+<strong>Client name:</strong> ${clientName}<br><br>
+
+<strong>Date of first shift:</strong> ${formatDateForDisplay(firstShiftDate)}`;
+
+            logger.info(
+              `🆕 New caregiver-client match (for new caregiver): ${caregiver.name} (${sourceAcId}) with client ${clientId}`
+            );
+
+            result.newClientMatchTickets.push({
+              requesterId: caregiver.zendesk_user_id,
+              subject,
+              dueAt: dueDate,
+              commentBody,
+              tags: ["new_cg-client_match"],
+              groupId: assigneeGroupId,
+              customFields,
+              caregiverName: caregiver.name,
+              clientName,
+              firstShiftDate: formatDateForDisplay(firstShiftDate),
+            });
+          } else {
+            logger.debug(
+              `   ℹ️  Ticket already exists for caregiver-client match: ${caregiver.name} with client ${clientId}`
+            );
+          }
         }
       }
     }

@@ -82,6 +82,7 @@ export function extractMappedFields(mappedData = {}) {
     extracted.client_status = userFields.userstatus || null;
     extracted.clinical_rn_manager = toJsonString(userFields.clinical_rn_manager);
     extracted.sales_rep = toJsonString(userFields.sales_rep);
+    extracted.scheduling_preferences = userFields.scheduling_preferences || null;
   }
 
   if (userType === "caregiver") {
@@ -136,6 +137,7 @@ export function convertDatabaseRowToZendeskUser(row) {
     }
     if (row.clinical_rn_manager) userFields.clinical_rn_manager = row.clinical_rn_manager;
     if (row.sales_rep) userFields.sales_rep = row.sales_rep;
+    if (row.scheduling_preferences) userFields.scheduling_preferences = row.scheduling_preferences;
   }
 
   if (row.user_type === "caregiver") {

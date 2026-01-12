@@ -15,10 +15,10 @@ export function upsertUserMapping(mapping) {
     INSERT INTO user_mappings (
       ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
       user_type, coordinator_pod, case_rating, client_status, clinical_rn_manager,
-      sales_rep, caregiver_status, department, market, identities, zendesk_primary,
+      sales_rep, scheduling_preferences, caregiver_status, department, market, identities, zendesk_primary,
       shared_phone_number, last_synced_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(ac_id) DO UPDATE SET
       zendesk_user_id = excluded.zendesk_user_id,
       external_id = excluded.external_id,
@@ -32,6 +32,7 @@ export function upsertUserMapping(mapping) {
       client_status = excluded.client_status,
       clinical_rn_manager = excluded.clinical_rn_manager,
       sales_rep = excluded.sales_rep,
+      scheduling_preferences = excluded.scheduling_preferences,
       caregiver_status = excluded.caregiver_status,
       department = excluded.department,
       market = excluded.market,
@@ -56,6 +57,7 @@ export function upsertUserMapping(mapping) {
     fields.client_status,
     fields.clinical_rn_manager,
     fields.sales_rep,
+    fields.scheduling_preferences,
     fields.caregiver_status,
     fields.department,
     fields.market,

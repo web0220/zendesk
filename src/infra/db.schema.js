@@ -11,6 +11,7 @@ const columnsToAdd = [
   { name: "client_status", def: "client_status TEXT" },
   { name: "clinical_rn_manager", def: "clinical_rn_manager TEXT" },
   { name: "sales_rep", def: "sales_rep TEXT" },
+  { name: "scheduling_preferences", def: "scheduling_preferences TEXT" },
   { name: "caregiver_status", def: "caregiver_status TEXT" },
   { name: "department", def: "department TEXT" },
   { name: "market", def: "market TEXT" },

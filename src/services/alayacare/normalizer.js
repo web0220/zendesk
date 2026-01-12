@@ -156,6 +156,7 @@ function buildClientUserFields({
   clinicalRNManagerArray,
   salesRepArray,
   marketArray,
+  schedulingPreferences,
 }) {
   return {
     market: marketArray,
@@ -164,6 +165,7 @@ function buildClientUserFields({
     case_rating: caseRatingValue,
     userstatus: clientStatusValue,
     sales_rep: salesRepArray,
+    scheduling_preferences: schedulingPreferences,
     type: "client",
   };
 }
@@ -239,6 +241,7 @@ export function normalizeClientRecord(client) {
     const caseRating = extractTierCaseRating(groups);
     const salesRep = extractSalesRep(tags) || null;
     const zendeskPrimary = extractZendeskPrimary(tags);
+    const schedulingPreferences = demographics.scheduling_preferences || null;
 
     const marketValues = Array.isArray(market)
       ? market
@@ -300,6 +303,7 @@ export function normalizeClientRecord(client) {
         clinicalRNManagerArray,
         salesRepArray,
         marketArray,
+        schedulingPreferences,
       }),
       zendeskPrimary,
     };
