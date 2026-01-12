@@ -9,26 +9,123 @@ const basicAuth = Buffer.from(
 ).toString("base64");
 
 /**
- * Format date to ISO string in format: YYYY-MM-DDTHH:mm:ss
- * @param {Date} date - Date object
- * @returns {string} Formatted date string
+ * Get current date in EST timezone (year, month, day only - no time)
+ * @returns {Object} Object with year, month (0-indexed), day
  */
-function formatDateForAPI(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}T00:00:00`;
+function getCurrentDateInEST() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  
+  const parts = formatter.formatToParts(now);
+  return {
+    year: parseInt(parts.find((p) => p.type === "year").value),
+    month: parseInt(parts.find((p) => p.type === "month").value) - 1, // 0-indexed
+    day: parseInt(parts.find((p) => p.type === "day").value),
+  };
 }
 
 /**
- * Fetch visits from AlayaCare scheduler API
+ * Convert EST date/time to API format string (YYYY-MM-DDTHH:mm:ss)
+ * @param {number} year - Year in EST
+ * @param {number} month - Month (0-indexed) in EST
+ * @param {number} day - Day in EST
+ * @param {number} hour - Hour (0-23) in EST
+ * @param {number} minute - Minute in EST (default: 0)
+ * @returns {string} Formatted date string for API
+ */
+function formatESTDateTimeForAPI(year, month, day, hour, minute = 0) {
+  const monthStr = String(month + 1).padStart(2, "0");
+  const dayStr = String(day).padStart(2, "0");
+  const hourStr = String(hour).padStart(2, "0");
+  const minuteStr = String(minute).padStart(2, "0");
+  return `${year}-${monthStr}-${dayStr}T${hourStr}:${minuteStr}:00`;
+}
+
+/**
+ * Fetch a single page of visits from AlayaCare scheduler API
  * @param {Object} params - Query parameters
  * @param {number} params.alayacare_employee_id - Caregiver's source_ac_id
  * @param {string} params.start_at - Start date in format: YYYY-MM-DDTHH:mm:ss
  * @param {string} params.end_at - End date in format: YYYY-MM-DDTHH:mm:ss
  * @param {boolean} [params.cancelled] - Filter by cancelled status (optional)
  * @param {string} [params.status] - Filter by status (optional, e.g., "scheduled")
- * @returns {Promise<Array>} Array of visit objects
+ * @param {number} [params.page] - Page number (default: 1)
+ * @returns {Promise<Object>} Response object with items, page, total_pages, etc.
+ */
+async function fetchVisitsPage({
+  alayacare_employee_id,
+  start_at,
+  end_at,
+  cancelled = null,
+  status = null,
+  page = 1,
+}) {
+  const params = {
+    alayacare_employee_id,
+    start_at,
+    end_at,
+    page,
+  };
+
+  if (cancelled !== null) {
+    params.cancelled = cancelled;
+  }
+
+  if (status) {
+    params.status = status;
+  }
+
+  // Build URL with query parameters
+  const url = new URL("/ext/api/v2/scheduler/visit", config.alayacare.baseUrl);
+  Object.keys(params).forEach((key) => {
+    if (params[key] !== null && params[key] !== undefined) {
+      url.searchParams.append(key, params[key]);
+    }
+  });
+
+  // Use native fetch instead of axios to avoid automatic headers (User-Agent, Accept, etc.)
+  // The AlayaCare visit API returns 502 if these headers are present
+  const fetchWithRetry = async () => {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        // Explicitly do NOT set any other headers (no Accept, Content-Type, User-Agent, etc.)
+      },
+    });
+
+    if (!response.ok) {
+      const error = new Error(`Request failed with status code ${response.status}`);
+      error.status = response.status;
+      error.response = {
+        status: response.status,
+        statusText: response.statusText,
+      };
+      throw error;
+    }
+
+    const data = await response.json();
+    return { data };
+  };
+
+  const res = await withRetry(fetchWithRetry, 3, 1000);
+  return res.data;
+}
+
+/**
+ * Fetch visits from AlayaCare scheduler API (handles pagination automatically)
+ * @param {Object} params - Query parameters
+ * @param {number} params.alayacare_employee_id - Caregiver's source_ac_id
+ * @param {string} params.start_at - Start date in format: YYYY-MM-DDTHH:mm:ss
+ * @param {string} params.end_at - End date in format: YYYY-MM-DDTHH:mm:ss
+ * @param {boolean} [params.cancelled] - Filter by cancelled status (optional)
+ * @param {string} [params.status] - Filter by status (optional, e.g., "scheduled")
+ * @returns {Promise<Array>} Array of visit objects (all pages combined)
  */
 export async function fetchVisits({
   alayacare_employee_id,
@@ -38,61 +135,51 @@ export async function fetchVisits({
   status = null,
 }) {
   try {
-    const params = {
+    // Fetch first page to get pagination info
+    const firstPage = await fetchVisitsPage({
       alayacare_employee_id,
       start_at,
       end_at,
-    };
-
-    if (cancelled !== null) {
-      params.cancelled = cancelled;
-    }
-
-    if (status) {
-      params.status = status;
-    }
-
-    // Build URL with query parameters
-    const url = new URL("/ext/api/v2/scheduler/visit", config.alayacare.baseUrl);
-    Object.keys(params).forEach((key) => {
-      if (params[key] !== null && params[key] !== undefined) {
-        url.searchParams.append(key, params[key]);
-      }
+      cancelled,
+      status,
+      page: 1,
     });
 
-    // Use native fetch instead of axios to avoid automatic headers (User-Agent, Accept, etc.)
-    // The AlayaCare visit API returns 502 if these headers are present
-    const fetchWithRetry = async () => {
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          Authorization: `Basic ${basicAuth}`,
-          // Explicitly do NOT set any other headers (no Accept, Content-Type, User-Agent, etc.)
-        },
-      });
+    const allItems = [...(firstPage.items || [])];
+    const totalPages = firstPage.total_pages || 1;
+    const itemsPerPage = firstPage.items_per_page || 100;
+    const totalCount = firstPage.count || 0;
 
-      if (!response.ok) {
-        const error = new Error(`Request failed with status code ${response.status}`);
-        error.status = response.status;
-        error.response = {
-          status: response.status,
-          statusText: response.statusText,
-        };
-        throw error;
-      }
-
-      const data = await response.json();
-      return { data };
-    };
-
-    const res = await withRetry(fetchWithRetry, 3, 1000);
-
-    const items = res.data?.items || [];
     logger.debug(
-      `📅 Fetched ${items.length} visits for caregiver ${alayacare_employee_id} (${start_at} to ${end_at})`
+      `📅 Fetched page 1/${totalPages}: ${firstPage.items?.length || 0} visits (total: ${totalCount}) for caregiver ${alayacare_employee_id}`
     );
 
-    return items;
+    // Fetch remaining pages if any
+    if (totalPages > 1) {
+      for (let page = 2; page <= totalPages; page++) {
+        const pageData = await fetchVisitsPage({
+          alayacare_employee_id,
+          start_at,
+          end_at,
+          cancelled,
+          status,
+          page,
+        });
+
+        const pageItems = pageData.items || [];
+        allItems.push(...pageItems);
+
+        logger.debug(
+          `📅 Fetched page ${page}/${totalPages}: ${pageItems.length} visits for caregiver ${alayacare_employee_id}`
+        );
+      }
+    }
+
+    logger.debug(
+      `📅 Fetched ${allItems.length} total visits for caregiver ${alayacare_employee_id} (${start_at} to ${end_at})`
+    );
+
+    return allItems;
   } catch (error) {
     logger.error(
       `❌ Failed to fetch visits for caregiver ${alayacare_employee_id}: ${error.message}`
@@ -105,18 +192,32 @@ export async function fetchVisits({
 }
 
 /**
- * Fetch scheduled visits for a caregiver (next 5 days)
+ * Fetch scheduled visits for a caregiver (current day 5 AM EST to current day + 6 days at 5 AM EST)
  * @param {number} alayacare_employee_id - Caregiver's source_ac_id
- * @param {Date} currentTime - Current time (defaults to now)
+ * @param {Date} currentDay - Current date (used to get EST day, time is ignored)
  * @returns {Promise<Array>} Array of scheduled visit objects
  */
-export async function fetchScheduledVisits(alayacare_employee_id, currentTime = new Date()) {
-  const startAt = formatDateForAPI(currentTime);
+export async function fetchScheduledVisits(alayacare_employee_id, currentDay = new Date()) {
+  // Get current day in EST
+  const estDate = getCurrentDateInEST();
   
-  // Add 5 days to current time
-  const endDate = new Date(currentTime);
-  endDate.setDate(endDate.getDate() + 5);
-  const endAt = formatDateForAPI(endDate);
+  // start_at: current day's 5 AM EST
+  const startAt = formatESTDateTimeForAPI(estDate.year, estDate.month, estDate.day, 5, 0);
+  
+  // end_at: current day + 6 days at 5 AM EST
+  const endDate = new Date(estDate.year, estDate.month, estDate.day);
+  endDate.setDate(endDate.getDate() + 6);
+  const endAt = formatESTDateTimeForAPI(
+    endDate.getFullYear(),
+    endDate.getMonth(),
+    endDate.getDate(),
+    5,
+    0
+  );
+
+  logger.debug(
+    `📅 Fetching scheduled visits: ${startAt} to ${endAt} (EST) for caregiver ${alayacare_employee_id}`
+  );
 
   return fetchVisits({
     alayacare_employee_id,
@@ -128,23 +229,34 @@ export async function fetchScheduledVisits(alayacare_employee_id, currentTime = 
 }
 
 /**
- * Fetch past visits for a caregiver (from 2022-01-01 to current time, non-cancelled only)
+ * Fetch past visits for a caregiver (from 2022-01-01 to current day's 5 AM EST)
+ * Note: Returns all visits including cancelled ones - filtering should be done in the orchestrator
  * @param {number} alayacare_employee_id - Caregiver's source_ac_id
- * @param {Date} currentTime - Current time (defaults to now)
- * @returns {Promise<Array>} Array of past visit objects (non-cancelled only)
+ * @param {Date} currentDay - Current date (used to get EST day, time is ignored)
+ * @returns {Promise<Array>} Array of past visit objects (includes cancelled visits)
  */
-export async function fetchPastVisits(alayacare_employee_id, currentTime = new Date()) {
+export async function fetchPastVisits(alayacare_employee_id, currentDay = new Date()) {
   const startAt = "2022-01-01T00:00:00";
-  const endAt = formatDateForAPI(currentTime);
+  
+  // Get current day in EST
+  const estDate = getCurrentDateInEST();
+  
+  // end_at: current day's 5 AM EST
+  const endAt = formatESTDateTimeForAPI(estDate.year, estDate.month, estDate.day, 5, 0);
 
+  logger.debug(
+    `📅 Fetching past visits: ${startAt} to ${endAt} (EST) for caregiver ${alayacare_employee_id}`
+  );
+
+  // Don't filter by cancelled here - return all visits so orchestrator can filter
   const allVisits = await fetchVisits({
     alayacare_employee_id,
     start_at: startAt,
     end_at: endAt,
-    cancelled: false,
+    cancelled: null, // Don't filter by cancelled - return all visits
   });
 
-  // Filter out cancelled visits (double-check, in case API doesn't filter properly)
-  return allVisits.filter((visit) => !visit.cancelled);
+  // Return all visits (including cancelled) - filtering will be done in orchestrator
+  return allVisits;
 }
 

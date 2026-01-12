@@ -115,10 +115,10 @@ async function checkNewCaregiverClientMatchTicketExists(alayacareEmployeeId, ala
 /**
  * Process a single caregiver for prep call tickets
  * @param {Object} caregiver - Caregiver record from database
- * @param {Date} currentTime - Current time
+ * @param {Date} currentDay - Current date (used to get EST day, time is ignored)
  * @returns {Promise<Object>} Result object with created tickets
  */
-async function processCaregiver(caregiver, currentTime) {
+async function processCaregiver(caregiver, currentDay) {
   const result = {
     caregiverId: caregiver.ac_id,
     caregiverName: caregiver.name,
@@ -136,9 +136,9 @@ async function processCaregiver(caregiver, currentTime) {
       return result;
     }
 
-    // Phase 4-5: Fetch scheduled visits (next 5 days)
+    // Phase 4-5: Fetch scheduled visits (current day 5 AM EST to current day + 6 days at 5 AM EST)
     logger.debug(`📅 Fetching scheduled visits for caregiver ${caregiver.name} (${sourceAcId})`);
-    const scheduledVisitsRaw = await fetchScheduledVisits(sourceAcId, currentTime);
+    const scheduledVisitsRaw = await fetchScheduledVisits(sourceAcId, currentDay);
     
     if (!scheduledVisitsRaw || scheduledVisitsRaw.length === 0) {
       logger.debug(`   ℹ️  No scheduled visits found for caregiver ${caregiver.name}`);
@@ -153,19 +153,34 @@ async function processCaregiver(caregiver, currentTime) {
       end_at: visit.end_at,
     }));
 
-    // Phase 6-7: Fetch past visits (non-cancelled only, from 2022-01-01 to current time)
+    // Phase 6-7: Fetch past visits (from 2022-01-01 to current day's 5 AM EST)
     logger.debug(`📅 Fetching past visits for caregiver ${caregiver.name} (${sourceAcId})`);
-    const pastVisitsRaw = await fetchPastVisits(sourceAcId, currentTime);
+    const pastVisitsRaw = await fetchPastVisits(sourceAcId, currentDay);
     
-    // Extract past visit data (already filtered for non-cancelled)
-    const pastVisits = pastVisitsRaw.map((visit) => ({
+    // Phase 7: Extract past visit data including cancelled field
+    const pastVisitsWithCancelled = pastVisitsRaw.map((visit) => ({
       alayacare_employee_id: visit.alayacare_employee_id,
       alayacare_client_id: visit.alayacare_client_id,
       start_at: visit.start_at,
       end_at: visit.end_at,
+      cancelled: visit.cancelled,
     }));
 
-    logger.debug(`   Found ${pastVisits.length} non-cancelled past visits`);
+    // Filter out cancelled visits (remove all rows where cancelled is true)
+    // Handle both boolean and string values: true, "true", "True", etc.
+    const pastVisits = pastVisitsWithCancelled.filter((visit) => {
+      const cancelled = visit.cancelled;
+      // Handle boolean false
+      if (cancelled === false) return true;
+      // Handle string "false" (case-insensitive)
+      if (typeof cancelled === "string" && cancelled.toLowerCase() === "false") return true;
+      // Handle null/undefined as not cancelled
+      if (cancelled === null || cancelled === undefined) return true;
+      // Everything else (true, "true", etc.) is considered cancelled
+      return false;
+    });
+
+    logger.debug(`   Found ${pastVisitsRaw.length} total past visits, ${pastVisits.length} non-cancelled past visits`);
 
     // Phase 8-10: Check for new caregiver (first shift with Alvita Care)
     if (pastVisits.length === 0) {
@@ -340,7 +355,18 @@ export async function runCaregiverPrepCallTickets() {
   logger.info("═══════════════════════════════════════════════════════════");
   logger.info(`🕒 Job started at ${startedAt}`);
 
-  const currentTime = new Date();
+  // Phase 1: Get current day in EST (not time)
+  const currentDay = new Date();
+  const estDate = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(currentDay);
+  const estYear = parseInt(estDate.find((p) => p.type === "year").value);
+  const estMonth = parseInt(estDate.find((p) => p.type === "month").value) - 1;
+  const estDay = parseInt(estDate.find((p) => p.type === "day").value);
+  logger.info(`📅 Current day in EST: ${estYear}-${String(estMonth + 1).padStart(2, "0")}-${String(estDay).padStart(2, "0")}`);
 
   // Check required configuration
   if (!CG_PREP_FIELD_ID) {
@@ -386,7 +412,7 @@ export async function runCaregiverPrepCallTickets() {
     const CAREGIVER_CONCURRENCY = Number(process.env.CAREGIVER_PREP_CALL_CONCURRENCY) || 5;
     
     const processTasks = caregivers.map((caregiver) => async () => 
-      processCaregiver(caregiver, currentTime)
+      processCaregiver(caregiver, currentDay)
     );
 
     const caregiverResults = await runWithLimit(processTasks, CAREGIVER_CONCURRENCY);
