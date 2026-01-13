@@ -139,4 +139,61 @@ export function searchTickets(query) {
   });
 }
 
+/**
+ * Search for Zendesk tickets with pagination support
+ * @param {string} query - Zendesk search query
+ * @returns {Promise<Array>} Array of all ticket objects across all pages
+ */
+export async function searchTicketsWithPagination(query) {
+  const allTickets = [];
+  let nextPage = null;
+  let pageCount = 0;
+
+  do {
+    const res = await zendeskRequest(async () => {
+      return await zendeskLimiter.schedule(() => {
+        if (nextPage) {
+          // If nextPage is a full URL, extract the path relative to baseURL
+          if (nextPage.startsWith('http')) {
+            const path = nextPage.replace(zendeskClient.defaults.baseURL, '');
+            return zendeskClient.get(path);
+          } else {
+            // If it's already a relative path, use it directly
+            return zendeskClient.get(nextPage);
+          }
+        } else {
+          // First page - use the query
+          return zendeskClient.get(`/search.json?query=${encodeURIComponent(query)}`);
+        }
+      });
+    });
+
+    const results = res.data?.results || [];
+    allTickets.push(...results);
+    pageCount++;
+    
+    logger.info(`📄 Page ${pageCount}: Retrieved ${results.length} tickets (total: ${allTickets.length})`);
+
+    // Check for next page
+    nextPage = res.data?.next_page || null;
+  } while (nextPage);
+
+  logger.info(`✅ Search completed. Total tickets found: ${allTickets.length}`);
+  return allTickets;
+}
+
+/**
+ * Delete a Zendesk ticket
+ * @param {number} ticketId - Ticket ID to delete
+ * @returns {Promise<boolean>} True if successful
+ */
+export function deleteTicket(ticketId) {
+  return zendeskRequest(async () => {
+    await zendeskLimiter.schedule(() => 
+      zendeskClient.delete(`/tickets/${ticketId}.json`)
+    );
+    return true;
+  });
+}
+
 

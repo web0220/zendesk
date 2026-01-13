@@ -206,7 +206,7 @@ export async function fetchScheduledVisits(alayacare_employee_id, currentDay = n
   
   // end_at: current day + 6 days at 5 AM EST
   const endDate = new Date(estDate.year, estDate.month, estDate.day);
-  endDate.setDate(endDate.getDate() + 6);
+  endDate.setDate(endDate.getDate() + 7);
   const endAt = formatESTDateTimeForAPI(
     endDate.getFullYear(),
     endDate.getMonth(),
