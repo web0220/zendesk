@@ -88,6 +88,24 @@ export function deleteUserPrimaryEmail(userId) {
 }
 
 /**
+ * Make an identity primary for a Zendesk user
+ * Uses PUT /api/v2/users/{user_id}/identities/{user_identity_id}/make_primary
+ * According to Zendesk docs, the 'primary' field is writable only when creating,
+ * not when updating. Use this endpoint to make an existing identity primary.
+ * @param {number} userId - Zendesk user ID
+ * @param {number} identityId - Identity ID to make primary
+ * @returns {Promise<boolean>} True if successful
+ */
+export function makeIdentityPrimary(userId, identityId) {
+  return zendeskRequest(async () => {
+    await zendeskLimiter.schedule(() => 
+      zendeskClient.put(`/users/${userId}/identities/${identityId}/make_primary.json`)
+    );
+    return true;
+  });
+}
+
+/**
  * Search for Zendesk user by email address
  * @param {string} email - Email address to search for
  * @returns {Promise<Object|null>} User object or null if not found
