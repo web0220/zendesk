@@ -4,6 +4,8 @@ import { fetchScheduledVisits, fetchPastVisits } from "../services/alayacare/vis
 import { searchTickets } from "../services/zendesk/zendesk.api.js";
 import { createPrivateTaskTicket, createTicketsBatch } from "../services/zendesk/ticket.js";
 import { runWithLimit } from "../utils/rateLimiter.js";
+import { appendFileSync, existsSync } from "fs";
+import { join } from "path";
 
 // Zendesk custom field IDs from environment variables
 // These should be set in .env file
@@ -16,6 +18,9 @@ const EXCLUDED_CAREGIVER_IDS = [618, 619, 3088, 4844];
 // Excluded client IDs (fake accounts)
 const EXCLUDED_CLIENT_IDS = [1096, 1320, 5265];
 
+// CSV file path for type 2 ticket logging
+const TYPE2_TICKETS_CSV_PATH = join(process.cwd(), "type2_tickets_log.csv");
+
 /**
  * Format date to MM/DD/YYYY
  * @param {Date|string} date - Date object or ISO string
@@ -27,6 +32,72 @@ function formatDateForDisplay(date) {
   const day = String(d.getDate()).padStart(2, "0");
   const year = d.getFullYear();
   return `${month}/${day}/${year}`;
+}
+
+/**
+ * Format market value for CSV (handles array, string, or null)
+ * @param {Array|string|null} market - Market value from client record
+ * @returns {string} Formatted market string
+ */
+function formatMarketForCsv(market) {
+  if (!market) return "";
+  if (Array.isArray(market)) {
+    return market.join("; ");
+  }
+  return String(market);
+}
+
+/**
+ * Escape CSV field value (handle commas, quotes, newlines)
+ * @param {string} value - Value to escape
+ * @returns {string} Escaped value
+ */
+function escapeCsvField(value) {
+  if (value === null || value === undefined) return "";
+  const str = String(value);
+  // If contains comma, quote, or newline, wrap in quotes and escape quotes
+  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+/**
+ * Log type 2 ticket creation to CSV file
+ * @param {string} caregiverName - Caregiver name
+ * @param {string} clientName - Client name
+ * @param {string} dateOfShift - Date of first shift (formatted)
+ * @param {Array|string|null} market - Client market
+ */
+function logType2TicketToCsv(caregiverName, clientName, dateOfShift, market) {
+  try {
+    const marketFormatted = formatMarketForCsv(market);
+    const timestamp = new Date().toISOString();
+    
+    // CSV headers if file doesn't exist
+    const headers = "Caregiver Name,Client Name,Date of Shift,Market,Created At";
+    
+    // Check if file exists, if not, write headers
+    if (!existsSync(TYPE2_TICKETS_CSV_PATH)) {
+      appendFileSync(TYPE2_TICKETS_CSV_PATH, headers + "\n", "utf8");
+    }
+    
+    // Create CSV row
+    const row = [
+      escapeCsvField(caregiverName),
+      escapeCsvField(clientName),
+      escapeCsvField(dateOfShift),
+      escapeCsvField(marketFormatted),
+      escapeCsvField(timestamp),
+    ].join(",");
+    
+    // Append to CSV file
+    appendFileSync(TYPE2_TICKETS_CSV_PATH, row + "\n", "utf8");
+    
+    logger.debug(`📝 Logged type 2 ticket to CSV: ${caregiverName} - ${clientName}`);
+  } catch (error) {
+    logger.error(`❌ Failed to log type 2 ticket to CSV: ${error.message}`);
+  }
 }
 
 /**
@@ -332,6 +403,9 @@ async function processCaregiver(caregiver, currentDay) {
               `🆕 New caregiver-client match (for new caregiver): ${caregiver.name} (${sourceAcId}) with client ${clientId}`
             );
 
+            // Get client market for CSV logging
+            const clientMarket = client?.market || null;
+
             result.newClientMatchTickets.push({
               requesterId: caregiver.zendesk_user_id,
               subject,
@@ -344,6 +418,14 @@ async function processCaregiver(caregiver, currentDay) {
               clientName,
               firstShiftDate: formatDateForDisplay(firstShiftDate),
             });
+
+            // Log to CSV file
+            logType2TicketToCsv(
+              caregiver.name,
+              clientName,
+              formatDateForDisplay(firstShiftDate),
+              clientMarket
+            );
           } else {
             logger.debug(
               `   ℹ️  Ticket already exists for caregiver-client match: ${caregiver.name} with client ${clientId}`
@@ -426,6 +508,9 @@ async function processCaregiver(caregiver, currentDay) {
 
 <strong>Date of first shift:</strong> ${formatDateForDisplay(firstShiftDate)}`;
 
+            // Get client market for CSV logging
+            const clientMarket = client?.market || null;
+
             result.newClientMatchTickets.push({
               requesterId: caregiver.zendesk_user_id,
               subject,
@@ -438,6 +523,14 @@ async function processCaregiver(caregiver, currentDay) {
               clientName,
               firstShiftDate: formatDateForDisplay(firstShiftDate),
             });
+
+            // Log to CSV file
+            logType2TicketToCsv(
+              caregiver.name,
+              clientName,
+              formatDateForDisplay(firstShiftDate),
+              clientMarket
+            );
           } else {
             logger.debug(
               `   ℹ️  Ticket already exists for caregiver-client match: ${caregiver.name} with client ${clientId}`
