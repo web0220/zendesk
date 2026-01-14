@@ -3,7 +3,7 @@ import { getActiveCaregiversForPrepCalls, getClientByAlayacareId } from "../infr
 import { fetchScheduledVisits, fetchPastVisits } from "../services/alayacare/visit.api.js";
 import { searchTickets } from "../services/zendesk/zendesk.api.js";
 import { createPrivateTaskTicket, createTicketsBatch } from "../services/zendesk/ticket.js";
-import { runWithLimit } from "../utils/rateLimiter.js";
+import { runWithLimit } from "../utils/concurrency.js";
 import { appendFileSync, existsSync } from "fs";
 import { join } from "path";
 

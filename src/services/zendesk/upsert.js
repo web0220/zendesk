@@ -2,7 +2,7 @@ import { logger } from "../../config/logger.js";
 import { callZendesk, getZendeskClient } from "./zendesk.api.js";
 import { addIdentities, syncUserIdentities } from "./identitySync.js";
 import { pollJobStatus } from "./jobPoller.js";
-import { zendeskLimiter } from "../../utils/limiter.js";
+import { zendeskLimiter } from "../../utils/rateLimiters/zendesk.js";
 
 function buildZendeskUserObject(user = {}) {
   return {

@@ -1,14 +1,11 @@
-import { config } from "./config/index.js";
-import { logger } from "./config/logger.js";
-import { runRecurringTickets } from "./core/recurringTicketOrchestrator.js";
-import { initDatabase, closeDatabase } from "./infra/database.js";
+import { config } from "../config/index.js";
+import { logger } from "../config/logger.js";
+import { runRecurringTickets } from "../core/recurringTicketOrchestrator.js";
+import { initDatabase, closeDatabase } from "../infra/database.js";
+import { bootstrap } from "./bootstrap.js";
 
-async function bootstrap() {
-
-  // Initialize database
-  initDatabase();
-
-  try {
+async function main() {
+  await bootstrap(async () => {
     // Parse command line arguments for specific task
     const args = process.argv.slice(2);
     const taskArg = args.find((arg) => arg.startsWith("--task="));
@@ -32,18 +29,11 @@ async function bootstrap() {
     const result = await runRecurringTickets({ task });
     logger.info("✅ Recurring ticket job completed successfully");
     logger.info("Summary:", JSON.stringify(result.summary, null, 2));
-  } catch (err) {
-    logger.error("❌ Recurring ticket job failed:", err);
-    process.exit(1);
-  } finally {
-    // Close database connection
-    closeDatabase();
-    // Close log file stream
-    logger.close();
-  }
+    return result;
+  });
 }
 
-bootstrap().catch((err) => {
+main().catch((err) => {
   logger.error("Startup error:", err);
   closeDatabase();
   logger.close();

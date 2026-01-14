@@ -1,5 +1,5 @@
 import { logger } from "../../config/logger.js";
-import { runWithLimit } from "../../utils/rateLimiter.js";
+import { runWithLimit } from "../../utils/concurrency.js";
 import {
   alayaClient,
   DETAIL_CONCURRENCY,

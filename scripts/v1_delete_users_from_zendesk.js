@@ -1,6 +1,6 @@
 // deleteUsersByOrganization.js
 import axios from "axios";
-import { zendeskLimiter } from "../src/utils/limiter.js";
+import { zendeskLimiter } from "../src/utils/rateLimiters/zendesk.js";
 import { logger } from "../src/config/logger.js";
 
 const ZENDESK_SUBDOMAIN = "alvitacare";

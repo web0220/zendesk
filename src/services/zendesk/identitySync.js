@@ -7,7 +7,7 @@ import {
   updateUserCustomFields,
   deleteUserIdentity,
 } from "./zendesk.api.js";
-import { zendeskLimiter } from "../../utils/limiter.js";
+import { zendeskLimiter } from "../../utils/rateLimiters/zendesk.js";
 
 function normalizeIdentities(identities = []) {
   return identities

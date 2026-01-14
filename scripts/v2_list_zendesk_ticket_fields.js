@@ -1,7 +1,7 @@
 import { config } from "../src/config/index.js";
 import { logger } from "../src/config/logger.js";
 import { getZendeskClient, callZendesk } from "../src/services/zendesk/zendesk.api.js";
-import { zendeskLimiter } from "../src/utils/limiter.js";
+import { zendeskLimiter } from "../src/utils/rateLimiters/zendesk.js";
 
 /**
  * Fetch all ticket fields from Zendesk and display them

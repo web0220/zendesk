@@ -4,7 +4,7 @@ import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js
 import { bulkUpsertUsers, updateUser } from "../services/zendesk/upsert.js";
 import { syncUserIdentitiesToMatchDatabase } from "../services/zendesk/identitySync.js";
 import { UserEntity } from "../domain/UserEntity.js";
-import { chunkArray, runWithLimit } from "../utils/rateLimiter.js";
+import { chunkArray, runWithLimit } from "../utils/concurrency.js";
 import {
   saveMappedUsersBatch,
   getUsersPendingSync,

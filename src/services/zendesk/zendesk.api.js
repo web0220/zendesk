@@ -2,7 +2,7 @@ import axios from "axios";
 import { config } from "../../config/index.js";
 import { logger } from "../../config/logger.js";
 import { withRetry } from "../../utils/retry.js";
-import { zendeskLimiter } from "../../utils/limiter.js";
+import { zendeskLimiter } from "../../utils/rateLimiters/zendesk.js";
 
 const zendeskClient = axios.create({
   baseURL: `https://${config.zendesk.subdomain}.zendesk.com/api/v2`,

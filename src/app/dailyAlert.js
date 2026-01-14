@@ -1,7 +1,8 @@
-import { config } from "./config/index.js";
-import { initDatabase } from "./infra/db.api.js";
-import { logger } from "./config/logger.js";
-import { createDailyAlertTicket } from "./core/dailyAlertTicket.js";
+import { config } from "../config/index.js";
+import { initDatabase } from "../infra/db.api.js";
+import { logger } from "../config/logger.js";
+import { createDailyAlertTicket } from "../core/dailyAlertTicket.js";
+import { closeDatabase } from "../infra/database.js";
 
 async function main() {
   try {
@@ -38,6 +39,9 @@ async function main() {
       logger.error(error.stack);
     }
     process.exit(1);
+  } finally {
+    closeDatabase();
+    logger.close();
   }
 }
 

@@ -1,3 +1,7 @@
+/**
+ * @deprecated Use imports from './index.js' instead
+ * This file is kept for backward compatibility but will be removed in a future version
+ */
 export { initDatabase, closeDatabase } from "./db.api.js";
 export {
   saveMappedDataToDatabase,

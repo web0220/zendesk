@@ -1,7 +1,8 @@
 import { logger } from "../../config/logger.js";
 import { callZendesk, getZendeskClient, getUser } from "./zendesk.api.js";
-import { zendeskLimiter } from "../../utils/limiter.js";
-import { runWithLimit } from "../../utils/rateLimiter.js";
+import { zendeskLimiter } from "../../utils/rateLimiters/zendesk.js";
+import { runWithLimit } from "../../utils/concurrency.js";
+import { isRetryableHttpError } from "../../utils/errorHandler.js";
 
 /**
  * Get current date components in EST timezone
@@ -273,24 +274,7 @@ export async function createPrivateTaskTicket({
  * @returns {boolean} True if error is retryable
  */
 function isRetryableError(error) {
-  // Network errors (no response)
-  if (!error.response) {
-    return true; // Network issues are retryable
-  }
-
-  const status = error.response.status;
-  
-  // Retryable HTTP status codes
-  const retryableStatuses = [
-    429, // Rate limit
-    500, // Internal server error
-    502, // Bad gateway
-    503, // Service unavailable
-    504, // Gateway timeout
-    408, // Request timeout
-  ];
-
-  return retryableStatuses.includes(status);
+  return isRetryableHttpError(error);
 }
 
 /**
