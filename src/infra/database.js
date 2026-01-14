@@ -10,6 +10,7 @@ export {
   fetchAndUpdateUserStatus,
   getAllUsersForSync,
   processNonActiveUser,
+  clearZendeskPrimaryForUsers,
 } from "./db.sync.repo.js";
 export {
   upsertUserMapping,

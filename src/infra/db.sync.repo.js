@@ -244,6 +244,7 @@ export function getUsersWithStatusChange() {
  * If a primary user is non-active, it's an alert that must be reported until fixed.
  * 
  * This function finds ALL primary users who are currently non-active, regardless of:
+ * - User type (clients AND caregivers are both included)
  * - When they were processed (non_active_status_fetched flag)
  * - When they changed status
  * - How long they've been non-active
@@ -253,6 +254,7 @@ export function getUsersWithStatusChange() {
  * - The user loses the zendesk_primary tag (zendesk_primary = 0)
  * 
  * @returns {Array} Array of primary user records with current_active = 0, zendesk_primary = 1, and zendesk_user_id IS NOT NULL
+ *                  Includes both clients and caregivers
  */
 export function getPrimaryUsersDeactivated() {
   const db = getDb();
@@ -264,10 +266,51 @@ export function getPrimaryUsersDeactivated() {
     ORDER BY updated_at DESC
   `);
   const users = stmt.all().map(hydrateMapping);
+  
+  // Log breakdown by user type for visibility
+  const clients = users.filter(u => u.user_type === 'client');
+  const caregivers = users.filter(u => u.user_type === 'caregiver');
+  const other = users.filter(u => u.user_type !== 'client' && u.user_type !== 'caregiver');
+  
   logger.info(
     `🔍 Found ${users.length} primary user(s) who are currently non-active (violates business rule - must be reported until fixed)`
   );
+  if (users.length > 0) {
+    logger.info(
+      `   📊 Breakdown: ${clients.length} client(s), ${caregivers.length} caregiver(s)${other.length > 0 ? `, ${other.length} other type(s)` : ''}`
+    );
+  }
+  
   return users;
+}
+
+/**
+ * Updates zendesk_primary to 0 for specified users after alert ticket is created.
+ * This prevents these users from being included in future alert tickets.
+ * 
+ * @param {Array<string>} acIds - Array of ac_id values to update
+ * @returns {number} Number of users updated
+ */
+export function clearZendeskPrimaryForUsers(acIds) {
+  if (!acIds || acIds.length === 0) {
+    return 0;
+  }
+
+  const db = getDb();
+  const placeholders = acIds.map(() => '?').join(',');
+  const stmt = db.prepare(`
+    UPDATE user_mappings
+    SET zendesk_primary = 0,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ac_id IN (${placeholders})
+      AND zendesk_primary = 1
+  `);
+  
+  const result = stmt.run(...acIds);
+  logger.info(
+    `🔄 Updated zendesk_primary to 0 for ${result.changes} user(s) after alert ticket creation`
+  );
+  return result.changes;
 }
 
 /**

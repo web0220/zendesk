@@ -1,7 +1,7 @@
 import { logger } from "../config/logger.js";
 import { createAlertTicket } from "../services/notification/ticket.js";
 import { writeAlertLog } from "../services/notification/alertLogger.js";
-import { findEmailGroupsWithoutPrimary, findPhoneGroupsWithoutPrimary, getPrimaryUsersDeactivated } from "../infra/database.js";
+import { findEmailGroupsWithoutPrimary, findPhoneGroupsWithoutPrimary, getPrimaryUsersDeactivated, clearZendeskPrimaryForUsers } from "../infra/database.js";
 import { getAllEdgeCaseErrors, clearEdgeCaseErrors } from "../infra/edgeCaseErrors.js";
 
 /**
@@ -117,6 +117,15 @@ export async function createDailyAlertTicket() {
 
     if (ticket) {
       logger.info(`✅ Successfully created alert ticket #${ticket.id}`);
+      
+      // Clear zendesk_primary flag for primary users who are non-active
+      // This prevents these users from being included in future alert tickets
+      // The ticket has been created, so we clear the flag to avoid duplicate alerts
+      if (alerts.primaryUsersDeactivated && alerts.primaryUsersDeactivated.length > 0) {
+        const acIds = alerts.primaryUsersDeactivated.map(user => user.ac_id);
+        const clearedCount = clearZendeskPrimaryForUsers(acIds);
+        logger.info(`🔄 Cleared zendesk_primary flag for ${clearedCount} non-active primary user(s) after creating alert ticket`);
+      }
       
       // Clear edge case errors after ticket is created
       // This ensures errors from previous day don't persist into the next day
