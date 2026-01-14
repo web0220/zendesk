@@ -3,62 +3,7 @@ import { callZendesk, getZendeskClient, getUser } from "./zendesk.api.js";
 import { zendeskLimiter } from "../../utils/rateLimiters/zendesk.js";
 import { runWithLimit } from "../../utils/concurrency.js";
 import { isRetryableHttpError } from "../../utils/errorHandler.js";
-
-/**
- * Get current date components in EST timezone
- * @returns {Object} Object with year, month (0-indexed), day
- */
-function getCurrentDateInEST() {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  
-  const parts = formatter.formatToParts(now);
-  return {
-    year: parseInt(parts.find((p) => p.type === "year").value),
-    month: parseInt(parts.find((p) => p.type === "month").value) - 1, // 0-indexed
-    day: parseInt(parts.find((p) => p.type === "day").value),
-  };
-}
-
-/**
- * Get the UTC offset for a specific date in America/New_York timezone
- * Returns offset in minutes (EST = -300, EDT = -240)
- * @param {Date} date - Date to check
- * @returns {number} Offset in minutes
- */
-function getESTOffsetMinutes(date) {
-  // Create two formatters: one for EST and one for UTC
-  const estFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    timeZoneName: "short",
-  });
-  
-  const utcFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC",
-    timeZoneName: "short",
-  });
-  
-  // Get the time in EST and UTC for the same moment
-  const estParts = estFormatter.formatToParts(date);
-  const utcParts = utcFormatter.formatToParts(date);
-  
-  // Calculate the difference
-  // This is a bit complex, so let's use a simpler approach:
-  // Format the date in EST, then create a date from that string and compare to UTC
-  const estDateStr = estFormatter.format(date);
-  const utcDateStr = utcFormatter.format(date);
-  
-  // Actually, simpler: create a date string in EST format and parse it
-  // EST is UTC-5 (300 minutes) or EDT is UTC-4 (240 minutes)
-  // We can determine which by checking what timezone abbreviation is used
-  const tzName = estParts.find((p) => p.type === "timeZoneName")?.value || "";
-  return tzName.includes("EDT") ? -240 : -300; // EDT = UTC-4, EST = UTC-5
-}
+import { getCurrentDateInEST, getESTOffsetMinutes } from "../../utils/date.js";
 
 /**
  * Convert EST date/time to UTC ISO string

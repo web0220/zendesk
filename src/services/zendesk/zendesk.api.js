@@ -78,6 +78,12 @@ export function deleteUserIdentity(userId, identityId) {
  * @param {number} userId - Zendesk user ID
  * @returns {Promise<boolean>} True if successful
  */
+/**
+ * Delete the primary email identity for a user
+ * @param {number} userId - Zendesk user ID
+ * @returns {Promise<Object>} API response
+ * @internal - Currently unused but kept for potential future use
+ */
 export function deleteUserPrimaryEmail(userId) {
   return zendeskRequest(async () => {
     await zendeskLimiter.schedule(() => 
@@ -109,6 +115,12 @@ export function makeIdentityPrimary(userId, identityId) {
  * Search for Zendesk user by email address
  * @param {string} email - Email address to search for
  * @returns {Promise<Object|null>} User object or null if not found
+ */
+/**
+ * Search for a Zendesk user by email address
+ * @param {string} email - Email address to search for
+ * @returns {Promise<Object>} Search results
+ * @internal - Currently unused but kept for potential future use
  */
 export function searchUserByEmail(email) {
   return zendeskRequest(async () => {

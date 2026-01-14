@@ -6,17 +6,7 @@ import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js
 import { getUserIdentities, deleteUserIdentity, getUser, updateUserCustomFields, makeIdentityPrimary } from "../services/zendesk/zendesk.api.js";
 import { extractAllPhoneNumbers, isAliasedEmail } from "./db.duplicate.repo.js";
 import { addIdentities } from "../services/zendesk/identitySync.js";
-
-const ALVITA_COMPANY_ORG_ID = "40994316312731";
-
-function isAlvitaCompanyMember(orgId) {
-  if (orgId === null || orgId === undefined) return false;
-  try {
-    return String(orgId) === ALVITA_COMPANY_ORG_ID;
-  } catch {
-    return false;
-  }
-}
+import { isAlvitaCompanyMember } from "../utils/constants.js";
 
 let insertMappedDataStmt;
 let selectZendeskIdStmt;

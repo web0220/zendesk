@@ -1,15 +1,5 @@
 import { logger } from "../config/logger.js";
-
-const ALVITA_COMPANY_ORG_ID = "40994316312731";
-
-function isAlvitaCompanyMember(orgId) {
-  if (orgId === null || orgId === undefined) return false;
-  try {
-    return String(orgId) === ALVITA_COMPANY_ORG_ID;
-  } catch {
-    return false;
-  }
-}
+import { isAlvitaCompanyMember } from "../utils/constants.js";
 
 export function determineUserTypeForStorage(mappedData, fields) {
   return (

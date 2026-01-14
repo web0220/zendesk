@@ -17,22 +17,11 @@ import {
   findPhoneGroupsWithoutPrimary,
   processNonActiveUser,
 } from "../infra/database.js";
-// Email notifications removed - replaced with daily ticket creation
-import { getDb } from "../infra/db.api.js";
-import { hydrateMapping } from "../domain/user.db.mapper.js";
+
+import { isAlvitaCompanyMember } from "../utils/constants.js";
 
 const BATCH_LIMIT = 100;
 const BATCH_CONCURRENCY = Number(process.env.ZENDESK_BATCH_CONCURRENCY) || 5;
-const ALVITA_COMPANY_ORG_ID = "40994316312731";
-
-function isAlvitaCompanyMember(orgId) {
-  if (orgId === null || orgId === undefined) return false;
-  try {
-    return String(orgId) === ALVITA_COMPANY_ORG_ID;
-  } catch {
-    return false;
-  }
-}
 
 function logFetchHealth(clients, caregivers) {
   if (clients.length < 100) {

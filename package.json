@@ -12,9 +12,7 @@
     "recurring:concierge": "NODE_ENV=production node src/app/recurring.js --task=concierge",
     "recurring:premium": "NODE_ENV=production node src/app/recurring.js --task=premium",
     "daily:alert": "NODE_ENV=production node src/app/dailyAlert.js",
-    "caregiver:prep": "NODE_ENV=production node src/app/caregiverPrepCall.js",
-    "test:caregiver-prep": "node scripts/test_caregiver_prep_logic.js",
-    "test:visit-api": "node scripts/test_visit_api.js"
+    "caregiver:prep": "NODE_ENV=production node src/app/caregiverPrepCall.js"
     },
   "keywords": [],
   "author": "",

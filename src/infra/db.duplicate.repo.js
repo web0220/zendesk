@@ -858,6 +858,8 @@ function movePhoneFromShared(user) {
 
 /**
  * Save original user data before duplicate processing (for reference)
+ * @deprecated - This function is not used and may be removed in a future version
+ * @internal
  */
 export function saveOriginalUserData() {
   const db = getDb();

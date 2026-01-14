@@ -1,33 +1,13 @@
 import { config } from "../../config/index.js";
 import { logger } from "../../config/logger.js";
 import { withRetry } from "../../utils/retry.js";
+import { getCurrentDateInEST } from "../../utils/date.js";
 
 // The AlayaCare visit API endpoint doesn't accept standard HTTP headers (User-Agent, Accept, etc.)
 // and returns 502 if they're present. We use native fetch which allows us to send only Authorization.
 const basicAuth = Buffer.from(
   `${config.alayacare.publicKey}:${config.alayacare.privateKey}`
 ).toString("base64");
-
-/**
- * Get current date in EST timezone (year, month, day only - no time)
- * @returns {Object} Object with year, month (0-indexed), day
- */
-function getCurrentDateInEST() {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  
-  const parts = formatter.formatToParts(now);
-  return {
-    year: parseInt(parts.find((p) => p.type === "year").value),
-    month: parseInt(parts.find((p) => p.type === "month").value) - 1, // 0-indexed
-    day: parseInt(parts.find((p) => p.type === "day").value),
-  };
-}
 
 /**
  * Convert EST date/time to API format string (YYYY-MM-DDTHH:mm:ss)

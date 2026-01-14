@@ -39,8 +39,9 @@ export function isRetryableHttpError(error, additionalRetryableStatuses = []) {
  * Extract error message from various error types
  * @param {Error|Object} error - Error object
  * @returns {string} Human-readable error message
+ * @private - Used internally by logError
  */
-export function extractErrorMessage(error) {
+function extractErrorMessage(error) {
   if (error instanceof Error) {
     return error.message;
   }
@@ -61,8 +62,9 @@ export function extractErrorMessage(error) {
  * @param {string} context - Context where error occurred
  * @param {Error|Object} error - Error object
  * @param {Object} metadata - Additional metadata to log
+ * @internal - Currently unused but kept for future error handling improvements
  */
-export function logError(context, error, metadata = {}) {
+function logError(context, error, metadata = {}) {
   const message = extractErrorMessage(error);
   const status = error?.response?.status;
   
