@@ -234,7 +234,7 @@ export function normalizeClientRecord(client) {
     // Use all emails (including internal) for identities and organization detection
     let emails = allEmailsCollected;
 
-    const market = client.branch?.name || extractMarket(groups) || null;
+    const market = extractMarket(groups) || null;
     const coordinator = extractCoordinatorPod(groups) || null;
     const clinicalRNManager =
       client.clinical_rn_manager || client.clinicalRNManager || extractClinicalRNManager(groups);
