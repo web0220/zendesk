@@ -132,24 +132,29 @@ async function waitForJob(jobId) {
 }
 
 // -------------------------------
-// 4. Get zendesk_user_ids from external_ids via Zendesk API
+// 4. Get zendesk_user_ids from external_ids
 // -------------------------------
-function getZendeskUserIdsFromExternalIds(externalIds) {
-  const dbPath = path.resolve("logs", "sync.db");
-  const db = new Database(dbPath);
+async function getZendeskUserIdsFromExternalIds(externalIds) {
+  const userIds = [];
   
-  try {
-    const placeholders = externalIds.map(() => "?").join(",");
-    const query = `SELECT zendesk_user_id FROM user_mappings WHERE external_id IN (${placeholders}) AND zendesk_user_id IS NOT NULL`;
-    
-    const rows = db.prepare(query).all(...externalIds);
-    const userIds = rows.map(row => row.zendesk_user_id).filter(id => id !== null);
-    
-    logger.info(`Found ${userIds.length} zendesk_user_ids for ${externalIds.length} external_ids`);
-    return userIds;
-  } finally {
-    db.close();
+  for (const externalId of externalIds) {
+    try {
+      const query = `external_id:${externalId}`;
+      const res = await zendeskLimiter.schedule(() => zendesk.get(`/users/search.json?query=${encodeURIComponent(query)}`));
+      
+      if (res.data.users && res.data.users.length > 0) {
+        const user = res.data.users[0];
+        if (user.id) {
+          userIds.push(user.id);
+        }
+      }
+    } catch (err) {
+      logger.warn(`Failed to find user with external_id ${externalId}:`, err.response?.data || err.message);
+    }
   }
+  
+  logger.info(`Found ${userIds.length} zendesk_user_ids for ${externalIds.length} external_ids`);
+  return userIds;
 }
 
 // -------------------------------
