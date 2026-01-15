@@ -15,6 +15,7 @@ export function getActiveClientsForCoordinationCheckIn() {
     WHERE user_type = 'client'
       AND current_active = 1
       AND zendesk_user_id IS NOT NULL
+      AND (source_ac_id IS NULL OR source_ac_id NOT IN (2155, 5265, 1096, 1320, 4649, 6365, 6373, 6170, 5021, 4603, 5995, 5154, 3386, 2825, 6319, 2168, 6289, 2712, 6171, 4702))
     ORDER BY name ASC
   `);
   const clients = stmt.all().map(hydrateMapping);
@@ -37,6 +38,7 @@ export function getActiveConciergeClients() {
       AND zendesk_user_id IS NOT NULL
       AND case_rating IS NOT NULL
       AND LOWER(case_rating) LIKE '%concierge%'
+      AND (source_ac_id IS NULL OR source_ac_id NOT IN (2155, 5265, 1096, 1320, 4649, 6365, 6373, 6170, 5021, 4603, 5995, 5154, 3386, 2825, 6319, 2168, 6289, 2712, 6171, 4702))
     ORDER BY name ASC
   `);
   const clients = stmt.all().map(hydrateMapping);
@@ -59,6 +61,7 @@ export function getActivePremiumClients() {
       AND zendesk_user_id IS NOT NULL
       AND case_rating IS NOT NULL
       AND LOWER(case_rating) LIKE '%premium%'
+      AND (source_ac_id IS NULL OR source_ac_id NOT IN (2155, 5265, 1096, 1320, 4649, 6365, 6373, 6170, 5021, 4603, 5995, 5154, 3386, 2825, 6319, 2168, 6289, 2712, 6171, 4702))
     ORDER BY name ASC
   `);
   const clients = stmt.all().map(hydrateMapping);
