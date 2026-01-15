@@ -6,7 +6,6 @@ import { bootstrap } from "./bootstrap.js";
 async function main() {
   await bootstrap(async () => {
     const result = await runJob();
-    logger.info("Job completed successfully:", result);
     return result;
   });
 }
