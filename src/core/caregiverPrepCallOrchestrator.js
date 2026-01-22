@@ -184,16 +184,23 @@ function createCheckInTicketConfig(originalTicketConfig) {
   const originalDueDate = new Date(originalTicketConfig.dueAt);
   const checkInDueDate = new Date(originalDueDate);
   checkInDueDate.setDate(checkInDueDate.getDate() + 2);
-  // Keep the same time (end of day)q
+  // Keep the same time (end of day)
   checkInDueDate.setHours(23, 59, 59, 999);
 
-  // Create check-in subject by prefixing with "Check-in: "
-  const checkInSubject = `Check-in: ${originalTicketConfig.subject}`;
+  // Create check-in subject by replacing "prep call" with "check-in call"
+  let checkInSubject = originalTicketConfig.subject;
+  checkInSubject = checkInSubject.replace("New caregiver prep call", "New caregiver check-in call");
+  checkInSubject = checkInSubject.replace("New caregiver-client match prep call", "New caregiver-client match check-in call");
 
   // Create check-in comment body (similar but indicating it's a check-in)
-  const checkInCommentBody = originalTicketConfig.commentBody.replace(
-    /<h3[^>]*>([^<]+)<\/h3>/,
-    '<h3 style="margin-top: 0;">Check-in: $1</h3>'
+  let checkInCommentBody = originalTicketConfig.commentBody;
+  checkInCommentBody = checkInCommentBody.replace(
+    /<h3[^>]*>New caregiver prep call<\/h3>/,
+    '<h3 style="margin-top: 0;">New caregiver check-in call</h3>'
+  );
+  checkInCommentBody = checkInCommentBody.replace(
+    /<h3[^>]*>New caregiver-client match prep call<\/h3>/,
+    '<h3 style="margin-top: 0;">New caregiver-client match check-in call</h3>'
   );
 
   // Create check-in tags (add check-in tag)
