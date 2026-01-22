@@ -184,7 +184,7 @@ function createCheckInTicketConfig(originalTicketConfig) {
   const originalDueDate = new Date(originalTicketConfig.dueAt);
   const checkInDueDate = new Date(originalDueDate);
   checkInDueDate.setDate(checkInDueDate.getDate() + 2);
-  // Keep the same time (end of day)
+  // Keep the same time (end of day)q
   checkInDueDate.setHours(23, 59, 59, 999);
 
   // Create check-in subject by prefixing with "Check-in: "
