@@ -168,7 +168,7 @@ The system is designed to be resilient:
 
 ## System Components Summary
 
-| Component | Purpose |
+|       Component      |     Purpose    |
 |-----------|---------|
 | **User Sync** | Keeps Zendesk user data current with AlayaCare |
 | **Recurring Tickets** | Creates scheduled check-in tickets for clients |
