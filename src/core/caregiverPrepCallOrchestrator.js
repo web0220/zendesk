@@ -11,7 +11,7 @@ const CG_PREP_FIELD_ID = process.env.ZENDESK_CG_PREP_FIELD_ID || null;
 const CG_PREP_DEDUP_KEY_FIELD_ID = process.env.ZENDESK_CG_PREP_DEDUP_KEY_FIELD_ID || null;
 
 // Excluded caregiver IDs (fake accounts)
-const EXCLUDED_CAREGIVER_IDS = [618, 619, 3088, 4844];
+const EXCLUDED_CAREGIVER_IDS = [618, 619, 3088, 4844, 5325, 1744, 1550, 5218, 5206, 5583, 626, 628, 203];
 
 // Excluded client IDs (fake accounts)
 const EXCLUDED_CLIENT_IDS = [1096, 1320, 5265];
