@@ -44,6 +44,19 @@ function calculateDueDate(firstShiftDate) {
 }
 
 /**
+ * Calculate due date (day after the first shift) for client check-in tickets
+ * @param {Date|string} firstShiftDate - Date of first shift
+ * @returns {string} ISO 8601 date string for due date
+ */
+function calculateDueDateDayAfter(firstShiftDate) {
+  const date = typeof firstShiftDate === "string" ? new Date(firstShiftDate) : firstShiftDate;
+  const dueDate = new Date(date);
+  dueDate.setDate(dueDate.getDate() + 1);
+  dueDate.setHours(23, 59, 59, 999);
+  return dueDate.toISOString();
+}
+
+/**
  * Get assignee group ID from coordinator pod
  * Maps coordinator_pod values to Zendesk group IDs
  * @param {string} coordinatorPod - Coordinator pod name
@@ -159,6 +172,7 @@ function createNewClientMatchTicketConfig(caregiver, sourceAcId, clientId, first
 
 <strong>Date of first shift:</strong> ${formatDateForDisplay(firstShiftDate)}`;
 
+  const firstShiftDateObj = typeof firstShiftDate === "string" ? new Date(firstShiftDate) : firstShiftDate;
   return {
     requesterId: caregiver.zendesk_user_id,
     subject,
@@ -170,53 +184,124 @@ function createNewClientMatchTicketConfig(caregiver, sourceAcId, clientId, first
     caregiverName: caregiver.name,
     clientName,
     firstShiftDate: formatDateForDisplay(firstShiftDate),
+    firstShiftDateIso: firstShiftDateObj.toISOString(),
+    clientZendeskUserId: client?.zendesk_user_id ?? null,
   };
 }
 
 /**
- * Create a check-in ticket configuration from an original prep call ticket
- * Check-in ticket is due 2 days after the original ticket's due date
- * @param {Object} originalTicketConfig - Original ticket configuration
- * @returns {Object} Check-in ticket configuration object
+ * Create caregiver check-in ticket configuration from an original prep call ticket.
+ * Caregiver check-in is due 2 days after the original ticket's due date.
+ * Subject: CG: new CG check-in call – [caregiver name] / [client name] (or client-match variant).
+ * Internal note: Type: New caregiver check-in call with caregiver (or client-match variant).
+ * @param {Object} originalTicketConfig - Original ticket configuration (must have caregiverName, clientName, firstShiftDate)
+ * @returns {Object} Caregiver check-in ticket configuration object
  */
-function createCheckInTicketConfig(originalTicketConfig) {
-  // Calculate check-in due date (2 days after original due date)
+function createCaregiverCheckInTicketConfig(originalTicketConfig) {
+  const isClientMatch = originalTicketConfig.tags?.includes("new_cg-client_match") ?? false;
+  const caregiverName = originalTicketConfig.caregiverName ?? "";
+  const clientName = originalTicketConfig.clientName ?? "";
+  const firstShiftDisplay = originalTicketConfig.firstShiftDate ?? "";
+
+  // Due date: 2 days after original due date
   const originalDueDate = new Date(originalTicketConfig.dueAt);
   const checkInDueDate = new Date(originalDueDate);
   checkInDueDate.setDate(checkInDueDate.getDate() + 2);
-  // Keep the same time (end of day)
   checkInDueDate.setHours(23, 59, 59, 999);
 
-  // Create check-in subject by replacing "prep call" with "check-in call"
-  let checkInSubject = originalTicketConfig.subject;
-  checkInSubject = checkInSubject.replace("New caregiver prep call", "New caregiver check-in call");
-  checkInSubject = checkInSubject.replace("New caregiver-client match prep call", "New caregiver-client match check-in call");
+  const subject = isClientMatch
+    ? `CG: new CG-client match check-in call – ${caregiverName} / ${clientName}`
+    : `CG: new CG check-in call – ${caregiverName} / ${clientName}`;
 
-  // Create check-in comment body (similar but indicating it's a check-in)
-  let checkInCommentBody = originalTicketConfig.commentBody;
-  checkInCommentBody = checkInCommentBody.replace(
-    /<h3[^>]*>New caregiver prep call<\/h3>/,
-    '<h3 style="margin-top: 0;">New caregiver check-in call</h3>'
-  );
-  checkInCommentBody = checkInCommentBody.replace(
-    /<h3[^>]*>New caregiver-client match prep call<\/h3>/,
-    '<h3 style="margin-top: 0;">New caregiver-client match check-in call</h3>'
-  );
+  const typeLabel = isClientMatch
+    ? "New caregiver-client match check-in call with caregiver"
+    : "New caregiver check-in call with caregiver";
+  const commentBody = `<h3 style="margin-top: 0;">${typeLabel}</h3><br>
 
-  // Create check-in tags (add check-in tag)
-  const checkInTags = [...originalTicketConfig.tags, "check-in"];
+<strong>CG name:</strong> ${caregiverName}<br><br>
+
+<strong>Client:</strong> ${clientName}<br><br>
+
+<strong>Date of first shift:</strong> ${firstShiftDisplay}`;
+
+  const checkInTags = [...(originalTicketConfig.tags ?? []), "check-in"];
 
   return {
     requesterId: originalTicketConfig.requesterId,
-    subject: checkInSubject,
+    subject,
     dueAt: checkInDueDate.toISOString(),
-    commentBody: checkInCommentBody,
+    commentBody,
     tags: checkInTags,
     groupId: originalTicketConfig.groupId,
-    customFields: originalTicketConfig.customFields,
-    caregiverName: originalTicketConfig.caregiverName,
-    clientName: originalTicketConfig.clientName,
-    firstShiftDate: originalTicketConfig.firstShiftDate,
+    customFields: originalTicketConfig.customFields ?? [],
+    caregiverName,
+    clientName,
+    firstShiftDate: firstShiftDisplay,
+  };
+}
+
+/**
+ * Create client check-in ticket configuration from an original prep call ticket.
+ * Client check-in is due the day after the first shift. Requestor is the client; assignee is pod group.
+ * Subject: CLIENT: new CG check-in call – [caregiver name] / [client name] (or client-match variant).
+ * Internal note: Type: New caregiver check-in call with client (or client-match variant).
+ * @param {Object} originalTicketConfig - Original ticket configuration (must have clientZendeskUserId, firstShiftDateIso, caregiverName, clientName, firstShiftDate, groupId)
+ * @returns {Object|null} Client check-in ticket configuration or null if client has no Zendesk user ID
+ */
+function createClientCheckInTicketConfig(originalTicketConfig) {
+  const clientZendeskUserId = originalTicketConfig.clientZendeskUserId;
+  if (!clientZendeskUserId) {
+    return null;
+  }
+
+  const isClientMatch = originalTicketConfig.tags?.includes("new_cg-client_match") ?? false;
+  const caregiverName = originalTicketConfig.caregiverName ?? "";
+  const clientName = originalTicketConfig.clientName ?? "";
+  const firstShiftDisplay = originalTicketConfig.firstShiftDate ?? "";
+
+  // Due date: day after the first shift
+  const firstShiftIso = originalTicketConfig.firstShiftDateIso ?? originalTicketConfig.dueAt;
+  const dueAt = calculateDueDateDayAfter(firstShiftIso);
+
+  const subject = isClientMatch
+    ? `CLIENT: new CG-client match check-in call – ${caregiverName} / ${clientName}`
+    : `CLIENT: new CG check-in call – ${caregiverName} / ${clientName}`;
+
+  const typeLabel = isClientMatch
+    ? "New caregiver-client match check-in call with client"
+    : "New caregiver check-in call with client";
+  const commentBody = `<h3 style="margin-top: 0;">${typeLabel}</h3><br>
+
+<strong>CG name:</strong> ${caregiverName}<br><br>
+
+<strong>Client:</strong> ${clientName}<br><br>
+
+<strong>Date of first shift:</strong> ${firstShiftDisplay}`;
+
+  const cgPrepValue = isClientMatch
+    ? "cg_prep_-_new_cg-client_match_coordination"
+    : "cg_prep_-_new_cg_coordination";
+  const customFields = [];
+  if (CG_PREP_FIELD_ID) {
+    customFields.push({
+      id: Number(CG_PREP_FIELD_ID),
+      value: cgPrepValue,
+    });
+  }
+
+  const checkInTags = ["check-in", ...(isClientMatch ? ["new_cg-client_match"] : ["new_cg"])];
+
+  return {
+    requesterId: clientZendeskUserId,
+    subject,
+    dueAt,
+    commentBody,
+    tags: checkInTags,
+    groupId: originalTicketConfig.groupId ?? null,
+    customFields,
+    caregiverName,
+    clientName,
+    firstShiftDate: firstShiftDisplay,
   };
 }
 
@@ -357,14 +442,20 @@ async function processCaregiver(caregiver, currentDay) {
             caregiverName: caregiver.name,
             clientName,
             firstShiftDate: formatDateForDisplay(firstShiftDate),
+            firstShiftDateIso: firstShiftDate.toISOString(),
+            clientZendeskUserId: client?.zendesk_user_id ?? null,
           };
 
           // Add original ticket
           result.newCaregiverTickets.push(newCaregiverTicket);
 
-          // Add check-in ticket (due 2 days after original)
-          const checkInTicket = createCheckInTicketConfig(newCaregiverTicket);
-          result.newCaregiverTickets.push(checkInTicket);
+          // Add caregiver check-in ticket (due 2 days after original)
+          const caregiverCheckIn = createCaregiverCheckInTicketConfig(newCaregiverTicket);
+          result.newCaregiverTickets.push(caregiverCheckIn);
+
+          // Add client check-in ticket (due day after first shift, requestor = client)
+          const clientCheckIn = createClientCheckInTicketConfig(newCaregiverTicket);
+          if (clientCheckIn) result.newCaregiverTickets.push(clientCheckIn);
           }
         } else {
           logger.debug(`   ℹ️  Ticket already exists for new caregiver ${caregiver.name}`);
@@ -419,9 +510,13 @@ async function processCaregiver(caregiver, currentDay) {
             // Add original ticket
             result.newClientMatchTickets.push(ticketConfig);
 
-            // Add check-in ticket (due 2 days after original)
-            const checkInTicket = createCheckInTicketConfig(ticketConfig);
-            result.newClientMatchTickets.push(checkInTicket);
+            // Add caregiver check-in ticket (due 2 days after original)
+            const caregiverCheckIn = createCaregiverCheckInTicketConfig(ticketConfig);
+            result.newClientMatchTickets.push(caregiverCheckIn);
+
+            // Add client check-in ticket (due day after first shift, requestor = client)
+            const clientCheckIn = createClientCheckInTicketConfig(ticketConfig);
+            if (clientCheckIn) result.newClientMatchTickets.push(clientCheckIn);
           } else {
             logger.debug(
               `   ℹ️  Ticket already exists for caregiver-client match: ${caregiver.name} with client ${clientId}`
@@ -482,9 +577,13 @@ async function processCaregiver(caregiver, currentDay) {
             // Add original ticket
             result.newClientMatchTickets.push(ticketConfig);
 
-            // Add check-in ticket (due 2 days after original)
-            const checkInTicket = createCheckInTicketConfig(ticketConfig);
-            result.newClientMatchTickets.push(checkInTicket);
+            // Add caregiver check-in ticket (due 2 days after original)
+            const caregiverCheckIn = createCaregiverCheckInTicketConfig(ticketConfig);
+            result.newClientMatchTickets.push(caregiverCheckIn);
+
+            // Add client check-in ticket (due day after first shift, requestor = client)
+            const clientCheckIn = createClientCheckInTicketConfig(ticketConfig);
+            if (clientCheckIn) result.newClientMatchTickets.push(clientCheckIn);
           } else {
             logger.debug(
               `   ℹ️  Ticket already exists for caregiver-client match: ${caregiver.name} with client ${clientId}`
