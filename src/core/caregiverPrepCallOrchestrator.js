@@ -210,11 +210,11 @@ function createCaregiverCheckInTicketConfig(originalTicketConfig) {
   checkInDueDate.setHours(23, 59, 59, 999);
 
   const subject = isClientMatch
-    ? `CG: new CG-client match check-in call – ${caregiverName} / ${clientName}`
+    ? `CG: new CG-CL match check-in call – ${caregiverName} / ${clientName}`
     : `CG: new CG check-in call – ${caregiverName} / ${clientName}`;
 
   const typeLabel = isClientMatch
-    ? "New caregiver-client match check-in call with caregiver"
+    ? "new caregiver-client match check-in call with caregiver"
     : "New caregiver check-in call with caregiver";
   const commentBody = `<h3 style="margin-top: 0;">${typeLabel}</h3><br>
 
@@ -264,11 +264,11 @@ function createClientCheckInTicketConfig(originalTicketConfig) {
   const dueAt = calculateDueDateDayAfter(firstShiftIso);
 
   const subject = isClientMatch
-    ? `CLIENT: new CG-client match check-in call – ${caregiverName} / ${clientName}`
+    ? `CLIENT: new CG-CL match check-in call – ${caregiverName} / ${clientName}`
     : `CLIENT: new CG check-in call – ${caregiverName} / ${clientName}`;
 
   const typeLabel = isClientMatch
-    ? "New caregiver-client match check-in call with client"
+    ? "new caregiver-client match check-in call with client"
     : "New caregiver check-in call with client";
   const commentBody = `<h3 style="margin-top: 0;">${typeLabel}</h3><br>
 
