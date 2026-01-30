@@ -289,7 +289,12 @@ function createClientCheckInTicketConfig(originalTicketConfig) {
     });
   }
 
-  const checkInTags = ["check-in", ...(isClientMatch ? ["new_cg-client_match"] : ["new_cg"])];
+  // Check-in tickets use same tags as prep: coordination tag + check-in
+  const coordinationTag = isClientMatch
+    ? "cg_prep_-_new_cg-client_match_coordination"
+    : "cg_prep_-_new_cg_coordination";
+  const baseTag = isClientMatch ? "new_cg-client_match" : "new_cg";
+  const checkInTags = [baseTag, coordinationTag, "check-in"];
 
   return {
     requesterId: clientZendeskUserId,
