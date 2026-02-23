@@ -193,18 +193,8 @@ function buildCaregiverUserFields({ marketArray, caregiverStatusValue, departmen
 export function normalizeClientRecord(client) {
   try {
     const demographics = client.demographics || {};
-    const firstName =
-      client.first_name ||
-      client.firstName ||
-      demographics.first_name ||
-      demographics.firstName ||
-      "";
-    const lastName =
-      client.last_name ||
-      client.lastName ||
-      demographics.last_name ||
-      demographics.lastName ||
-      "";
+    const firstName = demographics.first_name;
+    const lastName = demographics.last_name;
 
     const status = client.status || null;
     const groups = client.groups || [];
@@ -319,11 +309,29 @@ export function normalizeClientRecord(client) {
         // Convert back to normalized format (+1XXXXXXXXXX)
         return phoneNormalized.startsWith("1") ? `+${phoneNormalized}` : `+1${phoneNormalized}`;
       });
-    
+
+    // Client's phone_main and phone_other (for when there's no main profile - attach to contact/field-only profile)
+    const clientPhonesFromDemographics = [];
+    if (clientDemographics.phone_main) {
+      const m = String(clientDemographics.phone_main).match(phonePattern);
+      if (m && m.length > 0) {
+        const n = normalizePhone(m[0].trim());
+        if (n) clientPhonesFromDemographics.push(n);
+      }
+    }
+    if (clientDemographics.phone_other) {
+      const m = String(clientDemographics.phone_other).match(phonePattern);
+      if (m && m.length > 0) {
+        const n = normalizePhone(m[0].trim());
+        if (n) clientPhonesFromDemographics.push(n);
+      }
+    }
+
     // Create one profile per unique email
     const profiles = [];
     // Track index among rank-1 "demographics.email" profiles so multiple main emails get unique external_ids
     let mainEmailProfileIndex = 0;
+    const hasMainProfile = emailProfiles.some((ep) => ep.rank === 1 && ep.sourceField === "email");
 
     for (const emailProfile of emailProfiles) {
       const email = emailProfile.email;
@@ -331,16 +339,21 @@ export function normalizeClientRecord(client) {
       const relationship = getRelationshipForEmailProfile(emailProfile);
 
       // For contact profiles (rank 2): if their phone exists in demographics fields,
-      // don't include it (set to null) - it goes to main profile instead
-      if (emailProfile.rank === 2 && emailProfile.sourceField === "contact" && phone) {
+      // don't include it (set to null) only when there is a main profile to hold it.
+      // When there is no main profile (e.g. client has no demographics.email), keep the contact's phone on the contact profile.
+      if (emailProfile.rank === 2 && emailProfile.sourceField === "contact" && phone && hasMainProfile) {
         const phoneNormalized = normalizePhone(phone);
         if (phoneNormalized) {
           const phoneForComparison = phoneNormalized.replace(/\D/g, "");
-          // If phone exists in demographics fields, exclude it from contact profile
           if (mainProfilePhonesSet.has(phoneForComparison)) {
             phone = null;
           }
         }
+      }
+
+      // When there's no main profile, ensure this profile gets client's phone_main (and phone_other) - use phone_main as primary if profile has no phone yet
+      if (!hasMainProfile && (emailProfile.rank === 2 || emailProfile.rank === 3) && !phone && clientPhonesFromDemographics.length > 0) {
+        phone = clientPhonesFromDemographics[0];
       }
 
       // Build external_id: primary first (unique per main email when multiple), then contact, then other fields
@@ -375,7 +388,7 @@ export function normalizeClientRecord(client) {
       
       // Identities:
       // - Main profile (rank 1): additional phone numbers (different from phone field value)
-      // - Rank 2 & 3: empty (phone goes to main profile if exists in demographics, email is in email field)
+      // - Rank 2 & 3: empty when main profile exists (phone goes to main). When no main profile, attach client's phone_main/phone_other to this profile.
       let identities = [];
       if (emailProfile.rank === 1 && emailProfile.sourceField === "email") {
         // Main profile: add phones to identities, but exclude the phone field value
@@ -390,8 +403,19 @@ export function normalizeClientRecord(client) {
             return true;
           })
           .map(phone => ({ type: "phone_number", value: phone }));
+      } else if (!hasMainProfile && (emailProfile.rank === 2 || emailProfile.rank === 3)) {
+        // No main profile: attach client's phone_main and phone_other (and other demographics phones) to this profile
+        const phoneForComparison = phone ? normalizePhone(phone)?.replace(/\D/g, "") : null;
+        identities = mainProfilePhones
+          .filter(profilePhone => {
+            if (phoneForComparison) {
+              const profilePhoneForComparison = normalizePhone(profilePhone)?.replace(/\D/g, "");
+              return profilePhoneForComparison !== phoneForComparison;
+            }
+            return true;
+          })
+          .map(p => ({ type: "phone_number", value: p }));
       }
-      // Rank 2 & 3: empty identities array
       
       // Build source_field for tracking
       let sourceField = emailProfile.sourceField;

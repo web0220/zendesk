@@ -16,7 +16,7 @@ const DB_PATH = path.resolve(projectRoot, "data", "sync.db");
  * Example: node scripts/find-duplicates.js email user_mappings
  */
 async function findDuplicates() {
-  const column = process.argv[2] || "zendesk_user_id";
+  const column = process.argv[2] || "phone";
   const table = process.argv[3] || "user_mappings";
 
   console.log(`🔍 Finding duplicates for column: ${column} in table: ${table}`);

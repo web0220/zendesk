@@ -282,7 +282,8 @@ export function extractPhoneForEmailProfile(client, emailProfile) {
     return null;
   }
   
-  // Contact profiles (rank 2): use contact's phone_main if not already used
+  // Contact profiles (rank 2): use contact's phone_main. Return it even if it appears in demographics
+  // (e.g. emergency_contact); the normalizer will null it only when a main profile exists to hold it.
   if (emailProfile.rank === 2 && emailProfile.sourceField === "contact" && emailProfile.contactIndex !== undefined) {
     const contact = client.contacts?.[emailProfile.contactIndex];
     const contactDemo = contact?.demographics || {};
@@ -292,11 +293,7 @@ export function extractPhoneForEmailProfile(client, emailProfile) {
       if (matches && matches.length > 0) {
         const rawPhone = matches[0].trim();
         const normalized = normalizePhone(rawPhone);
-        const normalizedForComparison = normalized ? normalized.replace(/\D/g, "") : null;
-
-        if (normalizedForComparison && !usedPhones.has(normalizedForComparison)) {
-          return normalized;
-        }
+        if (normalized) return normalized;
       }
     }
   }
