@@ -142,21 +142,21 @@ function findEmailGroups(allUsers) {
     }
   }
 
-  // Connect users who share the same email
-  for (const [email, users] of emailIndex.entries()) {
+  // Connect users who share the same email (use external_id so multiple profiles per client stay separate unless they share an email)
+  for (const users of emailIndex.values()) {
     if (users.length > 1) {
       for (let i = 0; i < users.length; i++) {
         for (let j = i + 1; j < users.length; j++) {
-          union(users[i].ac_id, users[j].ac_id);
+          union(users[i].external_id, users[j].external_id);
         }
       }
     }
   }
 
-  // Group users by their root parent
+  // Group users by their root parent (by external_id so only profiles that share an email are in the same group)
   const groups = new Map();
   for (const user of allUsers) {
-    const root = find(user.ac_id);
+    const root = find(user.external_id);
     if (!groups.has(root)) {
       groups.set(root, []);
     }
@@ -334,24 +334,24 @@ function processEmailDuplicates() {
         return identity;
       }).filter((identity) => identity !== null);
 
-      // Update user if email or identities changed
+      // Update user if email or identities changed (use external_id so we update only this profile row, not all profiles with same ac_id)
       if (emailWasAliased || JSON.stringify(processedIdentities) !== JSON.stringify(identities)) {
         const updateStmt = db.prepare(`
           UPDATE user_mappings
           SET email = ?,
               identities = ?,
               updated_at = CURRENT_TIMESTAMP
-          WHERE ac_id = ?
+          WHERE external_id = ?
         `);
 
-        updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+        updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.external_id);
         processedCount++;
       }
     }
 
     // EDGE CASE DETECTION: Check if non-primary users share emails that don't match primary user
     // After aliasing emails that match primary user, check if non-primary users still share other emails
-    const nonPrimaryUsers = group.filter((u) => u.ac_id !== primaryUser.ac_id);
+    const nonPrimaryUsers = group.filter((u) => u.external_id !== primaryUser.external_id);
     if (nonPrimaryUsers.length > 1) {
       const primaryEmails = extractAllEmails(primaryUser).map(e => e.toLowerCase());
       
@@ -521,22 +521,21 @@ function processPhoneDuplicates() {
           ? sharedPhoneNumberStr.split("\n").filter((p) => p.trim()).length
           : 0;
         logger.debug(
-          `   Updated non-primary user ${duplicateUser.ac_id}: moved ${phoneCount} phone(s) to shared_phone_number`
+          `   Updated non-primary user ${duplicateUser.external_id}: moved ${phoneCount} phone(s) to shared_phone_number`
         );
         processedCount++;
-        processedUserIds.add(duplicateUser.ac_id);
       } catch (error) {
         logger.error(
-          `❌ Failed to move phones to shared_phone_number for user ${duplicateUser.ac_id}: ${error.message}`
+          `❌ Failed to move phones to shared_phone_number for user ${duplicateUser.external_id}: ${error.message}`
         );
       }
     }
 
-    processedUserIds.add(primaryUser.ac_id);
+    processedPrimaryExternalIds.add(primaryUser.external_id);
 
     // EDGE CASE DETECTION: Check if non-primary users share phones that don't match primary user
     // After moving phones to shared_phone_number for primary user's phones, check if non-primary users still share other phones
-    const nonPrimaryUsersForEdgeCase = phoneGroup.filter((u) => u.ac_id !== primaryUser.ac_id);
+    const nonPrimaryUsersForEdgeCase = phoneGroup.filter((u) => u.external_id !== primaryUser.external_id);
     if (nonPrimaryUsersForEdgeCase.length > 1) {
       const primaryPhones = extractAllPhoneNumbers(primaryUser);
       
@@ -706,16 +705,16 @@ function aliasUserEmail(user) {
     return identity;
   });
   
-  // Update database
+  // Update database (use external_id so we update only this profile row)
   const updateStmt = db.prepare(`
     UPDATE user_mappings
     SET email = ?,
         identities = ?,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
+    WHERE external_id = ?
   `);
   
-  updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+  updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.external_id);
   
   return { newEmail, processedIdentities, emailWasAliased };
 }
@@ -753,16 +752,16 @@ function unaliasUserEmail(user) {
     return identity;
   });
   
-  // Update database
+  // Update database (use external_id so we update only this profile row)
   const updateStmt = db.prepare(`
     UPDATE user_mappings
     SET email = ?,
         identities = ?,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
+    WHERE external_id = ?
   `);
   
-  updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.ac_id);
+  updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.external_id);
   
   return { newEmail, processedIdentities, emailWasUnaliased };
 }
@@ -792,17 +791,17 @@ function movePhoneToShared(user) {
     return !(identity.type === "phone" || identity.type === "phone_number");
   });
   
-  // Update database
+  // Update database (use external_id so we update only this profile row)
   const updateStmt = db.prepare(`
     UPDATE user_mappings
     SET phone = NULL,
         identities = ?,
         shared_phone_number = ?,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
+    WHERE external_id = ?
   `);
   
-  updateStmt.run(JSON.stringify(filteredIdentities), sharedPhoneNumberStr, user.ac_id);
+  updateStmt.run(JSON.stringify(filteredIdentities), sharedPhoneNumberStr, user.external_id);
   
   return { sharedPhoneNumberStr, filteredIdentities };
 }
@@ -841,17 +840,17 @@ function movePhoneFromShared(user) {
   
   const updatedIdentities = [...identities, ...phoneIdentities];
   
-  // Update database
+  // Update database (use external_id so we update only this profile row)
   const updateStmt = db.prepare(`
     UPDATE user_mappings
     SET phone = ?,
         identities = ?,
         shared_phone_number = NULL,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
+    WHERE external_id = ?
   `);
   
-  updateStmt.run(primaryPhone, JSON.stringify(updatedIdentities), user.ac_id);
+  updateStmt.run(primaryPhone, JSON.stringify(updatedIdentities), user.external_id);
   
   return { primaryPhone, updatedIdentities };
 }
