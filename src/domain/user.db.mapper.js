@@ -62,6 +62,8 @@ export function extractMappedFields(mappedData = {}) {
     identities: toJsonString(mappedData.identities),
     market: toJsonString(userFields.market),
     zendesk_primary: mappedData.zendesk_primary === true ? 1 : 0,
+    client_relationship: userFields.relationship ?? mappedData.relationship ?? null,
+    source_field: mappedData.sourceField || null,
   };
 
   if (userType === "client") {
@@ -138,6 +140,9 @@ export function convertDatabaseRowToZendeskUser(row) {
   }
 
   if (row.market) userFields.market = row.market;
+
+  const relationship = row.client_relationship ?? row.relationship ?? null;
+  if (relationship != null) userFields.relationship = relationship;
 
   if (row.zendesk_primary === 1 || row.zendesk_primary === true) {
     userFields.shared_phone_number = null;

@@ -16,19 +16,19 @@ function initializePreparedStatements() {
   const db = getDb();
   insertMappedDataStmt = db.prepare(`
     INSERT INTO user_mappings (
-      ac_id, zendesk_user_id, external_id, name, email, phone, organization_id,
+      external_id, zendesk_user_id, ac_id, name, email, phone, organization_id,
       user_type, source_ac_id, coordinator_pod, case_rating, client_status, clinical_rn_manager,
       sales_rep, scheduling_preferences, caregiver_status, department, market, identities, zendesk_primary,
-      shared_phone_number, current_active, last_synced_at
+      shared_phone_number, client_relationship, source_field, current_active, last_synced_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(ac_id) DO UPDATE SET
-      -- ac_id is the PRIMARY KEY - NEVER update it (used to identify the row)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(external_id) DO UPDATE SET
+      -- external_id is the PRIMARY KEY - NEVER update it (used to identify the row)
       -- Always update these fields from fresh API data (even for already-synced users)
       -- This ensures we capture any changes in AlayaCare (name, email, phone, etc.)
-      external_id = excluded.external_id,
+      ac_id = excluded.ac_id,
       name = excluded.name,
-      -- email: Always update from fresh API data (will be aliased in Phase 2 if needed)
+      -- email: Always update from fresh API data
       -- Database is source of truth - always use fresh data from AlayaCare
       email = excluded.email,
       phone = excluded.phone,
@@ -55,6 +55,8 @@ function initializePreparedStatements() {
       -- shared_phone_number: Always set to NULL in Phase 1 (will be set later if needed)
       -- This ensures clean state at the start of each sync
       shared_phone_number = NULL,
+      client_relationship = excluded.client_relationship,
+      source_field = excluded.source_field,
       -- Mark as active (found in current sync)
       current_active = 1,
       -- Reset non_active_status_fetched flag when user becomes active again
@@ -62,10 +64,10 @@ function initializePreparedStatements() {
       non_active_status_fetched = NULL,
       updated_at = CURRENT_TIMESTAMP
       -- Note: zendesk_user_id is NOT updated here - it's preserved for already-synced users
-      -- Note: ac_id is NOT updated here - it's the primary key used to identify the row
+      -- Note: external_id is NOT updated here - it's the primary key used to identify the row
   `);
 
-  selectZendeskIdStmt = db.prepare("SELECT zendesk_user_id FROM user_mappings WHERE ac_id = ?");
+  selectZendeskIdStmt = db.prepare("SELECT zendesk_user_id FROM user_mappings WHERE external_id = ?");
 
   saveBatchTransaction = db.transaction((batch) => {
     let changed = 0;
@@ -104,9 +106,9 @@ function saveMappedDataInternal(mappedData) {
   // }
 
   insertMappedDataStmt.run(
-    acKey,                    // 1. ac_id
+    external_id,              // 1. external_id (PRIMARY KEY)
     null,                     // 2. zendesk_user_id
-    external_id,              // 3. external_id
+    acKey,                    // 3. ac_id
     fields.name,              // 4. name
     fields.email,             // 5. email
     fields.phone,             // 6. phone
@@ -125,9 +127,11 @@ function saveMappedDataInternal(mappedData) {
     fields.identities,        // 19. identities
     fields.zendesk_primary,   // 20. zendesk_primary
     null,                     // 21. shared_phone_number
-    1,                        // 22. current_active (set to 1 for active users)
-    null,                     // 23. last_synced_at (NULL for new inserts)
-    // created_at and updated_at are CURRENT_TIMESTAMP in SQL (positions 23, 24)
+    fields.client_relationship, // 22. client_relationship
+    fields.source_field,      // 23. source_field
+    1,                        // 24. current_active (set to 1 for active users)
+    null,                     // 25. last_synced_at (NULL for new inserts)
+    // created_at and updated_at are CURRENT_TIMESTAMP in SQL
   );
   // logger.debug(
   //   `💾 Saved mapped data: ac_id=${acKey}, source_ac_id=${sourceAcId}, type=${fields.user_type}`

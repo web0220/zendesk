@@ -65,14 +65,26 @@ function checkAlvitacareEmailsInClient(client) {
   }
 }
 
+/**
+ * Map client to UserEntity objects (one per unique email)
+ * Returns array of UserEntity objects
+ */
 export function mapClientUser(rawClient) {
   // Check for alvitacare emails in unexpected fields before mapping
   checkAlvitacareEmailsInClient(rawClient);
   
-  const normalized = normalizeClientRecord(rawClient);
-  if (!normalized) return null;
-  const entity = UserEntity.fromAlayaCare(normalized);
-  return entity?.validate() ? entity : null;
+  const normalizedProfiles = normalizeClientRecord(rawClient);
+  if (!normalizedProfiles || normalizedProfiles.length === 0) return [];
+  
+  const entities = [];
+  for (const normalized of normalizedProfiles) {
+    const entity = UserEntity.fromAlayaCare(normalized);
+    if (entity?.validate()) {
+      entities.push(entity);
+    }
+  }
+  
+  return entities;
 }
 
 export function mapCaregiverUser(rawCaregiver) {
@@ -84,8 +96,9 @@ export function mapCaregiverUser(rawCaregiver) {
 
 // Backwards compatibility helpers (return plain Zendesk payloads)
 export function mapClientToZendesk(client) {
-  const entity = mapClientUser(client);
-  return entity ? entity.toZendeskPayload() : null;
+  const entities = mapClientUser(client);
+  // Return first entity for backwards compatibility, or null if none
+  return entities.length > 0 ? entities[0].toZendeskPayload() : null;
 }
 
 export function mapCaregiverToZendesk(caregiver) {

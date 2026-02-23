@@ -21,6 +21,8 @@ const columnsToAdd = [
   { name: "source_ac_id", def: "source_ac_id TEXT" },
   { name: "current_active", def: "current_active INTEGER DEFAULT 0" },
   { name: "non_active_status_fetched", def: "non_active_status_fetched INTEGER DEFAULT 0" },
+  { name: "client_relationship", def: "client_relationship TEXT" },
+  { name: "source_field", def: "source_field TEXT" },
 ];
 
 export function ensureSchema(db) {
@@ -30,9 +32,9 @@ export function ensureSchema(db) {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS user_mappings (
-      ac_id TEXT PRIMARY KEY,
+      external_id TEXT PRIMARY KEY,
       zendesk_user_id INTEGER,
-      external_id TEXT NOT NULL,
+      ac_id TEXT,
       name TEXT,
       email TEXT,
       phone TEXT,
@@ -50,6 +52,8 @@ export function ensureSchema(db) {
       identities TEXT,
       zendesk_primary INTEGER DEFAULT 0,
       shared_phone_number TEXT,
+      client_relationship TEXT,
+      source_field TEXT,
       last_synced_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -111,6 +115,16 @@ export function ensureSchema(db) {
     db,
     "idx_non_active_status_fetched",
     "CREATE INDEX IF NOT EXISTS idx_non_active_status_fetched ON user_mappings(non_active_status_fetched)"
+  );
+  ensureIndexExists(
+    db,
+    "idx_client_relationship",
+    "CREATE INDEX IF NOT EXISTS idx_client_relationship ON user_mappings(client_relationship)"
+  );
+  ensureIndexExists(
+    db,
+    "idx_source_field",
+    "CREATE INDEX IF NOT EXISTS idx_source_field ON user_mappings(source_field)"
   );
 }
 

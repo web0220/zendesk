@@ -8,6 +8,13 @@ import {
   removeInternalEmails,
   sanitizeMarketValues,
 } from "./identity.extractor.js";
+import {
+  extractEmailsWithPriority,
+  extractPhoneForEmailProfile,
+  getRelationshipForEmailProfile,
+  extractContactsWithUniquePhones,
+} from "./email.priority.extractor.js";
+import { normalizePhone } from "../../utils/validator.js";
 
 function extractMarket(groups = []) {
   const locGroups = groups.filter(
@@ -179,6 +186,10 @@ function buildCaregiverUserFields({ marketArray, caregiverStatusValue, departmen
   };
 }
 
+/**
+ * Normalize client record and create multiple profiles (one per unique email)
+ * Returns array of profile objects
+ */
 export function normalizeClientRecord(client) {
   try {
     const demographics = client.demographics || {};
@@ -199,41 +210,18 @@ export function normalizeClientRecord(client) {
     const groups = client.groups || [];
     const tags = client.tags || [];
 
-    const phoneDetails = collectAllPhoneDetails(client);
-    const phones = phoneDetails.map((entry) => entry.normalized);
-    const primaryPhone = phones.length > 0 ? phones[0] : null;
-
-    let emailDetails = collectAllEmailDetails(client, demographics);
-    let allEmailsCollected = emailDetails.map((entry) => entry.email);
+    // Extract emails with priority ranking
+    const emailProfiles = extractEmailsWithPriority(client);
     
-    // Filter internal emails (alvitacare.com, alayacare.com) from primary email selection
-    // Internal emails are also removed from identities (see line 255)
-    let emailsForPrimary = removeInternalEmails([...allEmailsCollected]);
-    let primaryEmail = emailsForPrimary.length > 0 ? emailsForPrimary[0] : null;
-
-    if (!primaryEmail) {
-      const allFoundEmails = findEmailsDeep(client);
-      const uniqueValidEmails = [...new Set(allFoundEmails)];
-      // Filter internal emails from found emails for primary selection
-      const validEmailsForPrimary = removeInternalEmails(uniqueValidEmails);
-      if (validEmailsForPrimary.length > 0) {
-        primaryEmail = validEmailsForPrimary[0];
-        // Add all found emails (including internal) to the full list
-        uniqueValidEmails.forEach((email) => {
-          if (!allEmailsCollected.includes(email)) {
-            allEmailsCollected.push(email);
-          }
-        });
-      }
+    // Also check for contacts with unique phone numbers but no email
+    const contactsWithUniquePhones = extractContactsWithUniquePhones(client, emailProfiles);
+    
+    if (emailProfiles.length === 0 && contactsWithUniquePhones.length === 0) {
+      logger.warn(`⚠️ No emails or unique phone contacts found for client ${client.id || client.ac_id || "unknown"}`);
+      return [];
     }
 
-    if (!primaryEmail && emailsForPrimary.length > 0) {
-      primaryEmail = emailsForPrimary[0];
-    }
-    
-    // Use all emails (including internal) for identities and organization detection
-    let emails = allEmailsCollected;
-
+    // Extract common fields (same for all profiles)
     const market = extractMarket(groups) || null;
     const coordinator = extractCoordinatorPod(groups) || null;
     const clinicalRNManager =
@@ -249,18 +237,6 @@ export function normalizeClientRecord(client) {
       ? market.split(",")
       : [];
     const marketArray = sanitizeMarketValues(marketValues);
-
-    const phoneIdentities = phones
-      .slice(1)
-      .map((phone) => ({ type: "phone", value: phone }))
-      .filter((identity) => identity.value);
-    // Include all emails (except primary) in identities, but exclude internal emails for clients
-    // Internal emails should not be in identities to avoid incorrect organization detection
-    const nonInternalEmails = removeInternalEmails(emails);
-    const emailIdentities = nonInternalEmails
-      .filter((email) => email && email !== primaryEmail)
-      .map((email) => ({ type: "email", value: email }))
-      .filter((identity) => identity.value);
 
     const coordinatorPodValue = coordinator
       ? coordinator.split(",")[0].trim().replace(/\s+/g, "_").toLowerCase()
@@ -281,35 +257,217 @@ export function normalizeClientRecord(client) {
           .filter(Boolean)
       : null;
 
-    // For organization detection, exclude internal emails to avoid incorrect classification
-    // Internal emails (like invoice emails) should not determine organization membership
-    const allEmailsForOrg = [primaryEmail, ...nonInternalEmails.filter(e => e !== primaryEmail)].filter(Boolean);
-    const organizationId = determineOrganizationId(allEmailsForOrg, "client");
-    const externalId = client.id ? `client_${client.id}` : null;
+    const name = `${firstName} ${lastName}`.trim() || null;
+    const acId = client.id || client.ac_id || null;
+    
+    // Build common user fields
+    const commonUserFields = buildClientUserFields({
+      coordinatorPodValue,
+      caseRatingValue,
+      clientStatusValue,
+      clinicalRNManagerArray,
+      salesRepArray,
+      marketArray,
+      schedulingPreferences,
+    });
 
-    return {
-      acId: client.id || null,
-      externalId,
-      name: `${firstName} ${lastName}`.trim() || null,
-      email: primaryEmail || null,
-      phone: primaryPhone,
-      organizationId,
-      identities: [...phoneIdentities, ...emailIdentities],
-      userType: "client",
-      userFields: buildClientUserFields({
-        coordinatorPodValue,
-        caseRatingValue,
-        clientStatusValue,
-        clinicalRNManagerArray,
-        salesRepArray,
-        marketArray,
-        schedulingPreferences,
-      }),
-      zendeskPrimary,
-    };
+    // Collect phone numbers ONLY from demographics fields (excluding contact fields)
+    // These phones go to main profile identities, even if contacts also have them
+    const clientDemographics = client.demographics || {};
+    const demographicsPhoneFields = [
+      clientDemographics.phone_main,
+      clientDemographics.phone_other,
+      clientDemographics.billing_contact,
+      clientDemographics.scheduling_contact,
+      clientDemographics.emergency_contact,
+    ];
+    
+    const phonePattern = /(?:(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4})/g;
+    const mainProfilePhonesSet = new Set();
+    
+    for (const fieldValue of demographicsPhoneFields) {
+      if (typeof fieldValue === "string") {
+        const matches = fieldValue.match(phonePattern);
+        if (matches) {
+          matches.forEach(phone => {
+            const normalized = normalizePhone(phone);
+            if (normalized) {
+              const normalizedForComparison = normalized.replace(/\D/g, "");
+              if (normalizedForComparison.length >= 10) {
+                mainProfilePhonesSet.add(normalizedForComparison);
+              }
+            }
+          });
+        }
+      }
+    }
+    
+    // Get unique contact phones that will have their own profiles (phones that ONLY exist in contact fields)
+    const uniqueContactPhones = new Set();
+    contactsWithUniquePhones.forEach(contactPhone => {
+      const normalized = normalizePhone(contactPhone.phone);
+      if (normalized) {
+        const normalizedForComparison = normalized.replace(/\D/g, "");
+        uniqueContactPhones.add(normalizedForComparison);
+      }
+    });
+    
+    // Main profile phones: all phones from demographics fields (excluding unique contact phones)
+    const mainProfilePhones = Array.from(mainProfilePhonesSet)
+      .filter(phoneNormalized => !uniqueContactPhones.has(phoneNormalized))
+      .map(phoneNormalized => {
+        // Convert back to normalized format (+1XXXXXXXXXX)
+        return phoneNormalized.startsWith("1") ? `+${phoneNormalized}` : `+1${phoneNormalized}`;
+      });
+    
+    // Create one profile per unique email
+    const profiles = [];
+    // Track index among rank-1 "demographics.email" profiles so multiple main emails get unique external_ids
+    let mainEmailProfileIndex = 0;
+
+    for (const emailProfile of emailProfiles) {
+      const email = emailProfile.email;
+      let phone = extractPhoneForEmailProfile(client, emailProfile);
+      const relationship = getRelationshipForEmailProfile(emailProfile);
+
+      // For contact profiles (rank 2): if their phone exists in demographics fields,
+      // don't include it (set to null) - it goes to main profile instead
+      if (emailProfile.rank === 2 && emailProfile.sourceField === "contact" && phone) {
+        const phoneNormalized = normalizePhone(phone);
+        if (phoneNormalized) {
+          const phoneForComparison = phoneNormalized.replace(/\D/g, "");
+          // If phone exists in demographics fields, exclude it from contact profile
+          if (mainProfilePhonesSet.has(phoneForComparison)) {
+            phone = null;
+          }
+        }
+      }
+
+      // Build external_id: primary first (unique per main email when multiple), then contact, then other fields
+      let externalId;
+      if (emailProfile.rank === 1 && emailProfile.sourceField === "email") {
+        mainEmailProfileIndex += 1;
+        if (mainEmailProfileIndex === 1) {
+          externalId = acId ? `client_${acId}` : null;
+        } else {
+          externalId = acId ? `client_${acId}_email_${mainEmailProfileIndex}` : null;
+        }
+      } else if (emailProfile.rank === 2 && emailProfile.sourceField === "contact") {
+        // Contact profile: client_xxxx_{contactRelationship}_{field1}_{field2}...
+        const contactRelationship = emailProfile.contactRelationship || "contact";
+        const relParts = contactRelationship.split(", ").map((s) => s.trim()).filter(Boolean);
+        const rank2FieldNames = emailProfile.rank2FieldNames || [];
+        const allParts = [...relParts, ...rank2FieldNames];
+        const sanitized = allParts.map((p) => p.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()).filter(Boolean);
+        const suffix = Array.from(new Set(sanitized)).join("_");
+        externalId = acId ? `client_${acId}_${suffix || "contact"}` : null;
+      } else {
+        // Rank 3 (field-only): client_xxxx_{sourceField} or combined fields
+        const relationship = emailProfile.relationship || emailProfile.sourceField;
+        const parts = (relationship || "").split(", ").map((s) => s.trim()).filter(Boolean);
+        const sanitized = parts.map((p) => p.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()).filter(Boolean);
+        const suffix = Array.from(new Set(sanitized)).join("_");
+        externalId = acId && suffix ? `client_${acId}_${suffix}` : acId ? `client_${acId}_${(emailProfile.sourceField || "").replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()}` : null;
+      }
+      
+      // Organization ID will be set to null initially (will be added after sync)
+      const organizationId = null;
+      
+      // Identities:
+      // - Main profile (rank 1): additional phone numbers (different from phone field value)
+      // - Rank 2 & 3: empty (phone goes to main profile if exists in demographics, email is in email field)
+      let identities = [];
+      if (emailProfile.rank === 1 && emailProfile.sourceField === "email") {
+        // Main profile: add phones to identities, but exclude the phone field value
+        const phoneForComparison = phone ? normalizePhone(phone)?.replace(/\D/g, "") : null;
+        identities = mainProfilePhones
+          .filter(profilePhone => {
+            // Exclude phone if it matches the phone field value
+            if (phoneForComparison) {
+              const profilePhoneForComparison = normalizePhone(profilePhone)?.replace(/\D/g, "");
+              return profilePhoneForComparison !== phoneForComparison;
+            }
+            return true;
+          })
+          .map(phone => ({ type: "phone_number", value: phone }));
+      }
+      // Rank 2 & 3: empty identities array
+      
+      // Build source_field for tracking
+      let sourceField = emailProfile.sourceField;
+      if (emailProfile.rank === 1) {
+        sourceField = `demographics.email`;
+      } else if (emailProfile.rank === 2 && emailProfile.contactIndex !== undefined) {
+        sourceField = `contacts[${emailProfile.contactIndex}].demographics.email`;
+      } else if (emailProfile.rank === 3) {
+        sourceField = `demographics.${emailProfile.sourceField}`;
+      }
+
+      // Profile name: contact profiles (rank 2 from contact) use contact's name; main (rank 1) and field-only (rank 3) use client name
+      let profileName = name;
+      if (emailProfile.rank === 2 && emailProfile.sourceField === "contact" && emailProfile.contactIndex != null) {
+        const contact = client.contacts?.[emailProfile.contactIndex];
+        const contactDemo = contact?.demographics || {};
+        const contactFirstName = contactDemo.first_name || contact?.first_name || "";
+        const contactLastName = contactDemo.last_name || contact?.last_name || "";
+        const contactName = `${contactFirstName} ${contactLastName}`.trim();
+        if (contactName) profileName = contactName;
+      }
+      
+      profiles.push({
+        acId: acId,
+        externalId,
+        name: profileName,
+        email,
+        phone,
+        organizationId,
+        identities,
+        userType: "client",
+        userFields: commonUserFields,
+        zendeskPrimary,
+        relationship,
+        sourceField,
+      });
+    }
+    
+    // Also create profiles for contacts with unique phones but no email
+    for (const contactPhone of contactsWithUniquePhones) {
+      const contact = client.contacts?.[contactPhone.contactIndex];
+      const contactDemo = contact?.demographics || {};
+      const contactFirstName = contactDemo.first_name || "";
+      const contactLastName = contactDemo.last_name || "";
+      const contactName = `${contactFirstName} ${contactLastName}`.trim() || name; // Fallback to client name if contact name missing
+
+      // Build external_id: client_xxxx_contact_relationship_contactIndex (contactIndex ensures uniqueness when multiple contacts share same relationship, e.g. multiple "MD")
+      const sanitizedRelationship = contactPhone.relationship.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+      const externalId = acId ? `client_${acId}_contact_${sanitizedRelationship}_${contactPhone.contactIndex}` : null;
+      
+      // Organization ID will be set to null initially
+      const organizationId = null;
+      
+      // Identities: empty (phone is already in phone field)
+      const identities = [];
+      
+      profiles.push({
+        acId: acId,
+        externalId,
+        name: contactName,
+        email: null, // No email
+        phone: contactPhone.phone,
+        organizationId,
+        identities,
+        userType: "client",
+        userFields: commonUserFields,
+        zendeskPrimary,
+        relationship: contactPhone.relationship,
+        sourceField: `contacts[${contactPhone.contactIndex}].demographics.phone_main`,
+      });
+    }
+    
+    return profiles;
   } catch (error) {
     logger.error("Mapping error (client):", error);
-    return null;
+    return [];
   }
 }
 

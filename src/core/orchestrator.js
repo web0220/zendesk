@@ -37,8 +37,14 @@ function logFetchHealth(clients, caregivers) {
 }
 
 function collectEntities(records, mapper, label) {
-  const mapped = records.map(mapper).filter(Boolean);
-  const valid = mapped.filter((entity) => entity.validate());
+  // Map each record - mapper may return single entity or array of entities
+  const mapped = records.flatMap((record) => {
+    const result = mapper(record);
+    // Handle both single entity and array of entities
+    return Array.isArray(result) ? result : (result ? [result] : []);
+  });
+  
+  const valid = mapped.filter((entity) => entity && entity.validate());
 
   if (mapped.length < records.length * 0.8) {
     logger.warn(
@@ -574,7 +580,12 @@ export async function runSync() {
           // Update database with zendesk_user_id and last_synced_at after syncing
           // Note: zendesk_user_id is set on first sync (when NULL), then preserved for subsequent syncs
           // Identities are not updated here - they're already in the database from the initial save
-          updateZendeskUserId(acId, jobResult.id, syncTimestamp, userType);
+          const externalId = matchedUserData.external_id;
+          if (externalId) {
+            updateZendeskUserId(externalId, jobResult.id, syncTimestamp);
+          } else {
+            logger.warn(`⚠️  Cannot update zendesk_user_id: missing external_id for ac_id=${acId}`);
+          }
           totalMappingsUpdated++;
 
           if (userType === "client") {

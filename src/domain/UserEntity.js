@@ -14,6 +14,8 @@ export class UserEntity {
     userFields = {},
     zendeskPrimary = false,
     sharedPhoneNumber = null,
+    relationship = null,
+    sourceField = null,
   }) {
     this.acId = acId ? String(acId) : null;
     this.externalId = externalId || null;
@@ -25,6 +27,8 @@ export class UserEntity {
     this.userFields = { ...userFields, type: userType || userFields.type || null };
     this.zendeskPrimary = Boolean(zendeskPrimary);
     this.sharedPhoneNumber = sharedPhoneNumber || null;
+    this.relationship = relationship || null;
+    this.sourceField = sourceField || null;
     this.identities = [];
     this._identityIndex = new Set();
 
@@ -89,6 +93,7 @@ export class UserEntity {
       user_fields: {
         ...this.userFields,
         shared_phone_number: this.zendeskPrimary ? null : this.sharedPhoneNumber,
+        relationship: this.relationship || undefined,
       },
     };
 
@@ -124,6 +129,8 @@ export class UserEntity {
       userFields: zendeskUser.user_fields,
       zendeskPrimary: zendeskUser.zendesk_primary,
       sharedPhoneNumber: zendeskUser.user_fields?.shared_phone_number ?? null,
+      relationship: row.client_relationship ?? row.relationship ?? null,
+      sourceField: row.source_field || null,
     });
   }
 
@@ -141,6 +148,8 @@ export class UserEntity {
       userFields: data.userFields || {},
       zendeskPrimary: Boolean(data.zendeskPrimary),
       sharedPhoneNumber: data.sharedPhoneNumber || null,
+      relationship: data.relationship || null,
+      sourceField: data.sourceField || null,
     });
   }
 }

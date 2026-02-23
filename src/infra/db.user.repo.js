@@ -98,42 +98,36 @@ export function getAllUserMappings() {
  * Note: zendesk_user_id is set on first sync (when NULL), then preserved for subsequent syncs.
  * Once set, it never changes - we use it to update the user profile in Zendesk.
  * 
- * @param {string} ac_id - AlayaCare ID
+ * @param {string} external_id - External ID (primary key)
  * @param {number} zendesk_user_id - Zendesk user ID (from Zendesk API response)
  * @param {string} last_synced_at - ISO timestamp of when sync completed
- * @param {string} userType - 'client' or 'caregiver'
  */
-export function updateZendeskUserId(ac_id, zendesk_user_id, last_synced_at, userType) {
+export function updateZendeskUserId(external_id, zendesk_user_id, last_synced_at) {
   const db = getDb();
-  const lookupKey = normalizeAcLookupKey(ac_id, userType);
   
   const sql = `
     UPDATE user_mappings
     SET zendesk_user_id = ?,
         last_synced_at = ?,
         updated_at = CURRENT_TIMESTAMP
-    WHERE ac_id = ?
-       OR (source_ac_id = ? AND (user_type = ? OR (user_type IS NULL AND ? IS NULL)))
+    WHERE external_id = ?
   `;
 
   const stmt = db.prepare(sql);
   const params = [
     zendesk_user_id,
     last_synced_at,
-    lookupKey || "__ac_lookup__",
-    String(ac_id),
-    userType || null,
-    userType || null
+    external_id
   ];
 
   const result = stmt.run(...params);
   if (result.changes === 0) {
     logger.warn(
-      `⚠️  Could not update zendesk_user_id for ac_id=${ac_id} (lookupKey=${lookupKey}). Record not found.`
+      `⚠️  Could not update zendesk_user_id for external_id=${external_id}. Record not found.`
     );
   } else {
     // logger.debug(
-    //   `🔄 Updated zendesk_user_id: ac_id=${ac_id} (lookup=${lookupKey}) → zendesk_user_id=${zendesk_user_id}`
+    //   `🔄 Updated zendesk_user_id: external_id=${external_id} → zendesk_user_id=${zendesk_user_id}`
     // );
   }
 }
