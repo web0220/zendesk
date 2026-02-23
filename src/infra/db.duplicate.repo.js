@@ -470,7 +470,7 @@ function processPhoneDuplicates() {
   }
 
   let processedCount = 0;
-  const processedUserIds = new Set();
+  const processedPrimaryExternalIds = new Set();
   const problematicPhoneGroups = [];
 
   for (const [phone, phoneGroup] of phoneGroups) {
@@ -481,7 +481,7 @@ function processPhoneDuplicates() {
 
     if (!primaryUser) {
       const userList = phoneGroup
-        .map((u) => `${u.ac_id} (${u.name || u.external_id})`)
+        .map((u) => `${u.external_id} (${u.name || u.external_id})`)
         .join(", ");
       logger.error(
         `❌ ERROR: No zendesk_primary user found in phone group (phone=${phone}). Users: ${userList}`
@@ -490,18 +490,18 @@ function processPhoneDuplicates() {
       continue;
     }
 
-    const duplicateUsers = phoneGroup.filter((u) => u.ac_id !== primaryUser.ac_id);
+    const duplicateUsers = phoneGroup.filter((u) => u.external_id !== primaryUser.external_id);
 
     // Skip if already processed this primary (to avoid double work)
-    if (processedUserIds.has(primaryUser.ac_id)) {
+    if (processedPrimaryExternalIds.has(primaryUser.external_id)) {
       logger.debug(
-        `⏭️  Skipping phone group (already processed primary): primary=${primaryUser.ac_id}`
+        `⏭️  Skipping phone group (already processed primary): primary=${primaryUser.external_id}`
       );
       continue;
     }
 
     logger.info(
-      `   Processing phone group: phone=${phone}, primary=${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id}), ${duplicateUsers.length} duplicate(s)`
+      `   Processing phone group: phone=${phone}, primary=${primaryUser.external_id} (${primaryUser.name || primaryUser.external_id}), ${duplicateUsers.length} duplicate(s)`
     );
 
     // Ensure primary user has phones in phone/identities and no shared_phone_number
