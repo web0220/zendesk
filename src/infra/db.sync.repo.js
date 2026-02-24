@@ -52,9 +52,8 @@ function initializePreparedStatements() {
       -- This ensures the database has the latest identities when reading to send to Zendesk
       identities = excluded.identities,
       zendesk_primary = excluded.zendesk_primary,
-      -- shared_phone_number: Always set to NULL in Phase 1 (will be set later if needed)
-      -- This ensures clean state at the start of each sync
-      shared_phone_number = NULL,
+      -- shared_phone_number: from payload (non-main client profiles set it in normalizer; duplicate processing sets it for active users in Phase 2)
+      shared_phone_number = excluded.shared_phone_number,
       client_relationship = excluded.client_relationship,
       source_field = excluded.source_field,
       -- Mark as active (found in current sync)
@@ -126,7 +125,7 @@ function saveMappedDataInternal(mappedData) {
     fields.market,            // 18. market
     fields.identities,        // 19. identities
     fields.zendesk_primary,   // 20. zendesk_primary
-    null,                     // 21. shared_phone_number
+    fields.shared_phone_number, // 21. shared_phone_number
     fields.client_relationship, // 22. client_relationship
     fields.source_field,      // 23. source_field
     1,                        // 24. current_active (set to 1 for active users)
