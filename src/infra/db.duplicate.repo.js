@@ -92,6 +92,90 @@ export function extractUnaliasedEmail(aliasedEmail) {
 }
 
 /**
+ * Find all field paths in a raw object where the value equals targetValue (case-insensitive for strings).
+ * Path format: "demographics.email", "contacts[0].demographics.email"
+ * @param {object} obj - Raw client or caregiver object
+ * @param {string} targetValue - Email or value to find
+ * @param {string} prefix - Current path prefix (internal)
+ * @returns {string[]} Array of path strings
+ */
+function getFieldPathsWithValue(obj, targetValue, prefix = "") {
+  if (obj === null || obj === undefined) return [];
+  const norm = (v) => (typeof v === "string" ? v.toLowerCase().trim() : String(v));
+  const targetNorm = norm(targetValue);
+  if (typeof obj !== "object" || Array.isArray(obj)) {
+    if (Array.isArray(obj)) {
+      const paths = [];
+      for (let i = 0; i < obj.length; i++) {
+        const seg = prefix ? `${prefix}[${i}]` : `[${i}]`;
+        paths.push(...getFieldPathsWithValue(obj[i], targetValue, seg));
+      }
+      return paths;
+    }
+    return norm(obj) === targetNorm ? [prefix || "."] : [];
+  }
+  const paths = [];
+  for (const [key, val] of Object.entries(obj)) {
+    const seg = prefix ? `${prefix}.${key}` : key;
+    if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+      paths.push(...getFieldPathsWithValue(val, targetValue, seg));
+    } else if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        paths.push(...getFieldPathsWithValue(val[i], targetValue, `${seg}[${i}]`));
+      }
+    } else {
+      if (norm(val) === targetNorm) paths.push(seg);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Build a map of ac_id -> raw client or caregiver for lookup during duplicate processing.
+ * @param {Array} clients - Raw client list from API (items with .id)
+ * @param {Array} caregivers - Raw caregiver list from API (items with .id)
+ * @returns {Map<string, object>} Map of "client_6150" -> raw client, "caregiver_123" -> raw caregiver
+ */
+function buildRawByAcId(clients = [], caregivers = []) {
+  const map = new Map();
+  for (const c of clients) {
+    const id = c.id ?? c.ac_id;
+    if (id != null) map.set(`client_${id}`, c);
+  }
+  for (const g of caregivers) {
+    const id = g.id ?? g.ac_id;
+    if (id != null) map.set(`caregiver_${id}`, g);
+  }
+  return map;
+}
+
+/**
+ * Convert a field path to a human-readable label for non-technical users.
+ * e.g. "demographics.email" -> "Email", "contacts[0].demographics.email" -> "Daughter's email"
+ * @param {string} path - Path like "demographics.email", "contacts[0].demographics.email", "demographics.invoice_email_recipients"
+ * @param {object} raw - Raw client or caregiver object (to resolve contact relationship)
+ * @returns {string} Human-readable label
+ */
+function pathToHumanReadable(path, raw) {
+  if (!path || typeof path !== "string") return path || "";
+  const trimmed = path.trim();
+  if (trimmed === "demographics.email") return "Email";
+  if (trimmed === "demographics.invoice_email_recipients") return "Invoice email";
+  const contactMatch = trimmed.match(/^contacts\[(\d+)\]\.demographics\.(email|invoice_email_recipients)$/);
+  if (contactMatch) {
+    const index = parseInt(contactMatch[1], 10);
+    const field = contactMatch[2];
+    const contact = raw?.contacts?.[index];
+    const relationship = (contact?.relationship ?? contact?.demographics?.relationship ?? "").toString().trim();
+    const label = field === "invoice_email_recipients" ? "invoice email" : "email";
+    if (relationship) return `${relationship}'s ${label}`;
+    return label === "email" ? "Contact email" : "Contact invoice email";
+  }
+  if (trimmed === "demographics.phone_main" || trimmed === "demographics.phone") return "Phone";
+  return trimmed;
+}
+
+/**
  * Find groups of users who share the same email addresses.
  * Groups are based ONLY on email matches (from email field and identities).
  */
@@ -199,10 +283,12 @@ function selectPrimaryUserForEmailGroup(group) {
 /**
  * Process email duplicates: group users by shared emails, alias duplicate emails.
  * Simplified version: Only alias non-primary users, track users needing primary tag.
- * 
+ * After finding primary, fills association1..relation3 on primary's main profile with non-primary users whose raw response contains primary's email (up to 3).
+ *
+ * @param {Map<string, object>} rawByAcId - Optional map of ac_id -> raw client/caregiver for association lookup
  * @returns {Array} Array of users who need zendesk_primary tag (groups with no primary)
  */
-function processEmailDuplicates() {
+function processEmailDuplicates(rawByAcId = new Map()) {
   const db = getDb();
   logger.info("📧 Phase 2: Processing duplicate emails for active users...");
 
@@ -262,6 +348,43 @@ function processEmailDuplicates() {
     }
 
     logger.info(`   ✅ Found zendesk_primary user: ${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id})`);
+
+    // Association/relation: find non-primary users whose raw response has primary's email; store up to 3 on primary's main profile
+    const primaryEmail = primaryUser.email ? primaryUser.email.trim().toLowerCase() : null;
+    if (primaryEmail && rawByAcId.size > 0) {
+      const nonPrimaryUsers = group.filter((u) => u.external_id !== primaryUser.external_id);
+      const found = [];
+      for (const nonPrimary of nonPrimaryUsers) {
+        if (found.length >= 3) break;
+        const raw = rawByAcId.get(nonPrimary.ac_id);
+        if (!raw) continue;
+        const paths = getFieldPathsWithValue(raw, primaryEmail);
+        if (paths.length > 0) found.push({ ac_id: nonPrimary.ac_id, paths, raw });
+      }
+      if (found.length > 0) {
+        const updateAssocStmt = db.prepare(`
+          UPDATE user_mappings
+          SET association1 = ?, relation1 = ?,
+              association2 = ?, relation2 = ?,
+              association3 = ?, relation3 = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE external_id = ?
+        `);
+        const toRelation = (f) =>
+          (f?.paths ?? [])
+            .map((p) => pathToHumanReadable(p, f?.raw))
+            .filter(Boolean)
+            .join(", ") || null;
+        const a1 = found[0]?.ac_id ?? null;
+        const r1 = toRelation(found[0]);
+        const a2 = found[1]?.ac_id ?? null;
+        const r2 = toRelation(found[1]);
+        const a3 = found[2]?.ac_id ?? null;
+        const r3 = toRelation(found[2]);
+        updateAssocStmt.run(a1, r1, a2, r2, a3, r3, primaryUser.ac_id);
+        logger.info(`   📎 Stored ${found.length} association(s) on primary ${primaryUser.ac_id}: ${found.map((f) => f.ac_id).join(", ")}`);
+      }
+    }
 
     // Alias all non-primary users' emails
     for (const user of group) {
@@ -1122,16 +1245,155 @@ export function processNonActiveUserEmailSwaps(usersWithStatusChange) {
 }
 
 /**
+ * When a non-main profile has the same name as the main profile, set its name to "Original Name (suffix)"
+ * where suffix is the part of external_id after ac_id (e.g. client_6437_email_2 -> "email_2").
+ * Run after saving mapped data so duplicate profiles are distinguishable.
+ */
+export function normalizeDuplicateProfileNames() {
+  const db = getDb();
+  const allActive = db
+    .prepare("SELECT external_id, ac_id, name FROM user_mappings WHERE current_active = 1")
+    .all();
+
+  const byAcId = new Map();
+  for (const row of allActive) {
+    const acId = row.ac_id;
+    if (!acId) continue;
+    if (!byAcId.has(acId)) byAcId.set(acId, []);
+    byAcId.get(acId).push(row);
+  }
+
+  const updateNameStmt = db.prepare(`
+    UPDATE user_mappings SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?
+  `);
+  let updatedCount = 0;
+  for (const [acId, profiles] of byAcId) {
+    const main = profiles.find((p) => p.external_id === acId);
+    if (!main || !main.name) continue;
+    const mainName = main.name.trim();
+    for (const p of profiles) {
+      if (p.external_id === acId) continue;
+      if ((p.name || "").trim() !== mainName) continue;
+      const suffix = p.external_id.startsWith(acId + "_")
+        ? p.external_id.slice(acId.length + 1)
+        : p.external_id;
+      const newName = `${mainName} (${suffix})`;
+      updateNameStmt.run(newName, p.external_id);
+      updatedCount += 1;
+    }
+  }
+  if (updatedCount > 0) {
+    logger.info(`   Renamed ${updatedCount} duplicate profile(s) to include suffix (e.g. "Name (email_2)")`);
+  }
+}
+
+/**
+ * Build placeholder email when all profiles for an ac_id have only aliased emails.
+ * Format: name (lowercase, spaces removed)@noemail.com
+ * @param {string} name - Display name (e.g. "Bernice Stein")
+ * @returns {string} e.g. "bernicestein@noemail.com"
+ */
+function toNoEmail(name) {
+  const base = (name || "").toLowerCase().replace(/\s+/g, "");
+  return (base || "unknown") + "@noemail.com";
+}
+
+/**
+ * For each unique ac_id that has at least one profile with an aliased email:
+ * - If ALL profiles (with email) have only aliased emails: collapse to single main profile (delete non-main, set main email to name@noemail.com).
+ * - If at least one profile has non-aliased email: delete only the profiles that have aliased email (keep the rest; do not change any email).
+ * Runs after saving mapped data and after processDuplicateEmailsAndPhones.
+ * Main profile = the row where external_id === ac_id (e.g. client_6150).
+ */
+export function collapseAllAliasedProfilesPerAcId() {
+  const db = getDb();
+  const allActive = db
+    .prepare("SELECT * FROM user_mappings WHERE current_active = 1")
+    .all()
+    .map(hydrateMapping);
+
+  const byAcId = new Map();
+  for (const user of allActive) {
+    const acId = user.ac_id;
+    if (!acId) continue;
+    if (!byAcId.has(acId)) byAcId.set(acId, []);
+    byAcId.get(acId).push(user);
+  }
+
+  const deleteStmt = db.prepare("DELETE FROM user_mappings WHERE external_id = ?");
+  const updateStmt = db.prepare(`
+    UPDATE user_mappings
+    SET email = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE external_id = ?
+  `);
+
+  let collapsedCount = 0;
+  let deletedOnlyCount = 0;
+  for (const [acId, profiles] of byAcId) {
+    const withAliased = profiles.filter((p) => p.email && isAliasedEmail(p.email));
+    if (withAliased.length === 0) continue;
+
+    const withEmail = profiles.filter((p) => p.email);
+    const allAliased = withEmail.length > 0 && withEmail.every((p) => isAliasedEmail(p.email));
+    const mainProfile = profiles.find((p) => p.external_id === acId);
+
+    if (allAliased && mainProfile) {
+      // All profiles have only aliased email: keep only main, set main email to name@noemail.com
+      const nonMain = profiles.filter((p) => p.external_id !== acId);
+      const noEmail = toNoEmail(mainProfile.name);
+      const run = db.transaction(() => {
+        for (const p of nonMain) {
+          deleteStmt.run(p.external_id);
+        }
+        updateStmt.run(noEmail, acId);
+      });
+      run();
+      collapsedCount += 1;
+      logger.info(
+        `   Collapsed all-aliased ac_id=${acId} (${mainProfile.name}): kept main profile, deleted ${nonMain.length} other(s), email → ${noEmail}`
+      );
+    } else {
+      // At least one profile has non-aliased email: delete only profiles that have aliased email
+      const toDelete = profiles.filter((p) => p.email && isAliasedEmail(p.email));
+      if (toDelete.length > 0) {
+        const run = db.transaction(() => {
+          for (const p of toDelete) {
+            deleteStmt.run(p.external_id);
+          }
+        });
+        run();
+        deletedOnlyCount += 1;
+        logger.info(
+          `   Removed ${toDelete.length} aliased-only profile(s) for ac_id=${acId}: ${toDelete.map((p) => p.external_id).join(", ")}`
+        );
+      }
+    }
+  }
+
+  if (collapsedCount > 0 || deletedOnlyCount > 0) {
+    logger.info(
+      `✅ Collapsed ${collapsedCount} ac_id(s) to single @noemail.com; removed aliased-only profiles for ${deletedOnlyCount} other ac_id(s)`
+    );
+  }
+}
+
+/**
  * Main function: Process email duplicates only.
  * Phone duplicate processing is commented out per business requirements.
- * 
+ * Pass raw clients and caregivers so we can store association/relation (non-primary users whose raw response has primary's email) on primary's main profile.
+ *
+ * @param {Array} [rawClients=[]] - Raw client list from API (for association lookup)
+ * @param {Array} [rawCaregivers=[]] - Raw caregiver list from API (for association lookup)
  * @returns {Array} Array of users who need zendesk_primary tag (groups with no primary)
  */
-export function processDuplicateEmailsAndPhones() {
+export function processDuplicateEmailsAndPhones(rawClients = [], rawCaregivers = []) {
   logger.info("🔍 Processing duplicate emails...");
 
+  const rawByAcId = buildRawByAcId(rawClients, rawCaregivers);
+
   // Step 1: Process email duplicates (most important - avoid email conflicts)
-  const emailUsersNeedingPrimary = processEmailDuplicates();
+  const emailUsersNeedingPrimary = processEmailDuplicates(rawByAcId);
 
   // Step 2: Process phone duplicates
   const phoneUsersNeedingPrimary = processPhoneDuplicates();

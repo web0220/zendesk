@@ -23,6 +23,12 @@ const columnsToAdd = [
   { name: "non_active_status_fetched", def: "non_active_status_fetched INTEGER DEFAULT 0" },
   { name: "client_relationship", def: "client_relationship TEXT" },
   { name: "source_field", def: "source_field TEXT" },
+  { name: "association1", def: "association1 TEXT" },
+  { name: "relation1", def: "relation1 TEXT" },
+  { name: "association2", def: "association2 TEXT" },
+  { name: "relation2", def: "relation2 TEXT" },
+  { name: "association3", def: "association3 TEXT" },
+  { name: "relation3", def: "relation3 TEXT" },
 ];
 
 export function ensureSchema(db) {

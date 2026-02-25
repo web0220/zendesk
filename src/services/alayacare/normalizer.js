@@ -461,9 +461,9 @@ export function normalizeClientRecord(client) {
         externalId = acId && suffix ? `client_${acId}_${suffix}` : acId ? `client_${acId}_${(emailProfile.sourceField || "").replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()}` : null;
       }
       
-      // Organization ID will be set to null initially (will be added after sync)
-      const organizationId = null;
-      
+      // Organization ID from client's branch (AlayaCare branch_id maps to Zendesk organization_id)
+      const organizationId = client.branch_id != null ? client.branch_id : null;
+
       // Build source_field for tracking
       let sourceField = emailProfile.sourceField;
       if (emailProfile.rank === 1) {
@@ -512,7 +512,7 @@ export function normalizeClientRecord(client) {
 
       const sanitizedRelationship = contactPhone.relationship.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
       const externalId = acId ? `client_${acId}_contact_${sanitizedRelationship}_${contactPhone.contactIndex}` : null;
-      const organizationId = null;
+      const organizationId = client.branch_id != null ? client.branch_id : null;
       const identities = [];
       const contactOnlyPhones = contact ? getContactPhones(contact) : [];
       const sharedPhoneNumberContactOnly = contactOnlyPhones.length > 0 ? contactOnlyPhones.join("\n") : (contactPhone.phone ? normalizePhone(contactPhone.phone) : null);

@@ -25,6 +25,8 @@ export {
 } from "./db.user.repo.js";
 export { 
   processDuplicateEmailsAndPhones,
+  collapseAllAliasedProfilesPerAcId,
+  normalizeDuplicateProfileNames,
   processNonActiveUserEmailSwaps,
   findEmailGroupsWithoutPrimary,
   findPhoneGroupsWithoutPrimary,

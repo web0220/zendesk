@@ -10,6 +10,8 @@ import {
   getUsersPendingSync,
   updateZendeskUserId,
   processDuplicateEmailsAndPhones,
+  collapseAllAliasedProfilesPerAcId,
+  normalizeDuplicateProfileNames,
   resetCurrentActiveFlag,
   getUsersWithStatusChange,
   getAllUsersForSync,
@@ -113,10 +115,19 @@ export async function runSync() {
       );
     }
 
-    // Phase 2: Process duplicate emails for active users
+    // Normalize duplicate profile names: when non-main profile has same name as main, set to "Name (suffix)"
+    logger.info("🔧 Normalizing duplicate profile names...");
+    normalizeDuplicateProfileNames();
+
+    // Phase 2: Process duplicate emails for active users (pass raw clients/caregivers for association/relation lookup)
     logger.info("🔧 Phase 2: Processing duplicate emails for active users...");
-    const usersNeedingPrimary = processDuplicateEmailsAndPhones();
+    const usersNeedingPrimary = processDuplicateEmailsAndPhones(clients, caregivers);
     logger.info("✅ Finished processing email duplicates");
+
+    // Phase 2b: Collapse ac_ids where all profiles have only aliased emails → single main profile with name@noemail.com
+    logger.info("🔧 Phase 2b: Collapsing all-aliased profiles per ac_id...");
+    collapseAllAliasedProfilesPerAcId();
+    logger.info("✅ Finished collapsing all-aliased profiles");
     
     if (usersNeedingPrimary.length > 0) {
       logger.error(`❌ Found ${usersNeedingPrimary.length} user(s) in email/phone groups without zendesk_primary tag`);
