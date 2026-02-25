@@ -150,29 +150,57 @@ function buildRawByAcId(clients = [], caregivers = []) {
 }
 
 /**
+ * Known field names that can contain emails (or contact info) -> human-readable label.
+ * Used so we don't mislabel e.g. invoice_email_recipients as "Email".
+ */
+const EMAIL_FIELD_LABELS = Object.freeze({
+  email: "Email",
+  invoice_email_recipients: "Invoice email",
+  billing_contact: "Billing contact",
+  scheduling_contact: "Scheduling contact",
+  emergency_contact: "Emergency contact",
+  home_care_pulse_contact: "Home care pulse contact",
+  quickbooks_id: "QuickBooks",
+  deal_name: "Deal",
+});
+
+/**
+ * Humanize a snake_case field name for display (e.g. "billing_contact" -> "Billing contact").
+ */
+function humanizeFieldName(fieldName) {
+  if (!fieldName || typeof fieldName !== "string") return fieldName || "";
+  return fieldName
+    .split("_")
+    .map((word) => (word.length > 0 ? word[0].toUpperCase() + word.slice(1).toLowerCase() : ""))
+    .join(" ");
+}
+
+/**
  * Convert a field path to a human-readable label for non-technical users.
- * e.g. "demographics.email" -> "Email", "contacts[0].demographics.email" -> "Daughter's email"
- * @param {string} path - Path like "demographics.email", "contacts[0].demographics.email", "demographics.invoice_email_recipients"
+ * Handles demographics.email, invoice_email_recipients, billing_contact, scheduling_contact,
+ * emergency_contact, and contacts[i].demographics.* with relationship prefix.
+ * @param {string} path - Path like "demographics.email", "contacts[0].demographics.billing_contact"
  * @param {object} raw - Raw client or caregiver object (to resolve contact relationship)
  * @returns {string} Human-readable label
  */
 function pathToHumanReadable(path, raw) {
   if (!path || typeof path !== "string") return path || "";
   const trimmed = path.trim();
-  if (trimmed === "demographics.email") return "Email";
-  if (trimmed === "demographics.invoice_email_recipients") return "Invoice email";
-  const contactMatch = trimmed.match(/^contacts\[(\d+)\]\.demographics\.(email|invoice_email_recipients)$/);
-  if (contactMatch) {
-    const index = parseInt(contactMatch[1], 10);
-    const field = contactMatch[2];
-    const contact = raw?.contacts?.[index];
+  const contactMatch = trimmed.match(/^contacts\[(\d+)\]\.(.+)$/);
+  const contactIndex = contactMatch ? parseInt(contactMatch[1], 10) : null;
+  const innerPath = contactMatch ? contactMatch[2] : trimmed;
+  const fieldName = innerPath.includes(".") ? innerPath.split(".").pop() : innerPath;
+  const fieldLower = fieldName.toLowerCase();
+
+  const label = EMAIL_FIELD_LABELS[fieldLower] ?? humanizeFieldName(fieldName);
+
+  if (contactIndex != null && raw?.contacts?.[contactIndex]) {
+    const contact = raw.contacts[contactIndex];
     const relationship = (contact?.relationship ?? contact?.demographics?.relationship ?? "").toString().trim();
-    const label = field === "invoice_email_recipients" ? "invoice email" : "email";
-    if (relationship) return `${relationship}'s ${label}`;
-    return label === "email" ? "Contact email" : "Contact invoice email";
+    if (relationship) return `${relationship}'s ${label.toLowerCase()}`;
+    return `Contact ${label.toLowerCase()}`;
   }
-  if (trimmed === "demographics.phone_main" || trimmed === "demographics.phone") return "Phone";
-  return trimmed;
+  return label;
 }
 
 /**
@@ -349,19 +377,33 @@ function processEmailDuplicates(rawByAcId = new Map()) {
 
     logger.info(`   ✅ Found zendesk_primary user: ${primaryUser.ac_id} (${primaryUser.name || primaryUser.external_id})`);
 
-    // Association/relation: find non-primary users whose raw response has primary's email; store up to 3 on primary's main profile
-    const primaryEmail = primaryUser.email ? primaryUser.email.trim().toLowerCase() : null;
-    if (primaryEmail && rawByAcId.size > 0) {
-      const nonPrimaryUsers = group.filter((u) => u.external_id !== primaryUser.external_id);
+    // Association/relation: per email group (per profile), not per ac_id. Each profile has its own email and may be in a different group.
+    // Store on the primary *profile* for THIS group (primaryUser.external_id), so client_4649_email_2 gets association for its email, not client_4649's.
+    const groupEmails = new Set();
+    for (const u of group) {
+      extractAllEmails(u).forEach((e) => groupEmails.add(e.toLowerCase().trim()));
+    }
+    if (groupEmails.size > 0 && rawByAcId.size > 0) {
+      const nonPrimaryProfiles = group.filter((u) => u.external_id !== primaryUser.external_id);
+      const seenAcIds = new Set([primaryUser.ac_id]);
       const found = [];
-      for (const nonPrimary of nonPrimaryUsers) {
+      for (const nonPrimary of nonPrimaryProfiles) {
         if (found.length >= 3) break;
+        if (seenAcIds.has(nonPrimary.ac_id)) continue;
         const raw = rawByAcId.get(nonPrimary.ac_id);
         if (!raw) continue;
-        const paths = getFieldPathsWithValue(raw, primaryEmail);
-        if (paths.length > 0) found.push({ ac_id: nonPrimary.ac_id, paths, raw });
+        const allPaths = [];
+        for (const groupEmail of groupEmails) {
+          allPaths.push(...getFieldPathsWithValue(raw, groupEmail));
+        }
+        const paths = [...new Set(allPaths)];
+        if (paths.length > 0) {
+          seenAcIds.add(nonPrimary.ac_id);
+          found.push({ ac_id: nonPrimary.ac_id, paths, raw });
+        }
       }
       if (found.length > 0) {
+        const primaryProfileExternalId = primaryUser.external_id;
         const updateAssocStmt = db.prepare(`
           UPDATE user_mappings
           SET association1 = ?, relation1 = ?,
@@ -381,8 +423,8 @@ function processEmailDuplicates(rawByAcId = new Map()) {
         const r2 = toRelation(found[1]);
         const a3 = found[2]?.ac_id ?? null;
         const r3 = toRelation(found[2]);
-        updateAssocStmt.run(a1, r1, a2, r2, a3, r3, primaryUser.ac_id);
-        logger.info(`   📎 Stored ${found.length} association(s) on primary ${primaryUser.ac_id}: ${found.map((f) => f.ac_id).join(", ")}`);
+        updateAssocStmt.run(a1, r1, a2, r2, a3, r3, primaryProfileExternalId);
+        logger.info(`   📎 Stored ${found.length} association(s) on profile ${primaryProfileExternalId} (this email group): ${found.map((f) => f.ac_id).join(", ")}`);
       }
     }
 
