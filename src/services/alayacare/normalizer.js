@@ -269,7 +269,11 @@ export function normalizeClientRecord(client) {
 
     const name = `${firstName} ${lastName}`.trim() || null;
     const acId = client.id || client.ac_id || null;
-    
+
+    // Zendesk organization_id: same logic as caregivers (client org 42824772337179, or Alvita member 40994316312731)
+    const allClientEmails = findEmailsDeep(client);
+    const organizationId = determineOrganizationId(allClientEmails, "client");
+
     // Build common user fields
     const commonUserFields = buildClientUserFields({
       coordinatorPodValue,
@@ -460,9 +464,6 @@ export function normalizeClientRecord(client) {
         const suffix = Array.from(new Set(sanitized)).join("_");
         externalId = acId && suffix ? `client_${acId}_${suffix}` : acId ? `client_${acId}_${(emailProfile.sourceField || "").replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()}` : null;
       }
-      
-      // Organization ID from client's branch (AlayaCare branch_id maps to Zendesk organization_id)
-      const organizationId = client.branch_id != null ? client.branch_id : null;
 
       // Build source_field for tracking
       let sourceField = emailProfile.sourceField;
@@ -512,7 +513,6 @@ export function normalizeClientRecord(client) {
 
       const sanitizedRelationship = contactPhone.relationship.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
       const externalId = acId ? `client_${acId}_contact_${sanitizedRelationship}_${contactPhone.contactIndex}` : null;
-      const organizationId = client.branch_id != null ? client.branch_id : null;
       const identities = [];
       const contactOnlyPhones = contact ? getContactPhones(contact) : [];
       const sharedPhoneNumberContactOnly = contactOnlyPhones.length > 0 ? contactOnlyPhones.join("\n") : (contactPhone.phone ? normalizePhone(contactPhone.phone) : null);
