@@ -445,8 +445,8 @@ function processEmailDuplicates(rawByAcId = new Map()) {
         if (primaryEmails.includes(normalizedEmail)) {
           const emailParts = newEmail.split("@");
           if (emailParts.length === 2) {
-            // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123")
-            newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+            // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123"); store lowercase for duplicate detection
+            newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`.toLowerCase();
             emailWasAliased = true;
             logger.info(
               `   🔄 Aliasing email for user ${user.ac_id}: ${user.email} → ${newEmail}`
@@ -486,8 +486,8 @@ function processEmailDuplicates(rawByAcId = new Map()) {
           if (primaryEmails.includes(identityEmail)) {
             const emailParts = identity.value.split("@");
             if (emailParts.length === 2) {
-              // external_id already contains the prefix (e.g., "client_4767" or "caregiver_123")
-              const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+              // external_id already contains the prefix; store lowercase for duplicate detection
+              const aliasedEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`.toLowerCase();
               logger.info(
                 `   🔄 Aliasing email identity ${identity.value} → ${aliasedEmail} for user ${user.ac_id}`
               );
@@ -842,11 +842,11 @@ function aliasUserEmail(user) {
   if (newEmail && !isAliasedEmail(newEmail)) {
     const emailParts = newEmail.split("@");
     if (emailParts.length === 2) {
-      newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`;
+      newEmail = `${emailParts[0]}+${user.external_id}@${emailParts[1]}`.toLowerCase();
       emailWasAliased = true;
     }
   }
-  
+
   // Process identities
   let identities = user.identities;
   if (typeof identities === "string") {
@@ -859,12 +859,12 @@ function aliasUserEmail(user) {
   if (!Array.isArray(identities)) {
     identities = [];
   }
-  
+
   const processedIdentities = identities.map((identity) => {
     if (identity.type === "email" && identity.value && !isAliasedEmail(identity.value)) {
       const emailParts = identity.value.split("@");
       if (emailParts.length === 2) {
-        return { ...identity, value: `${emailParts[0]}+${user.external_id}@${emailParts[1]}` };
+        return { ...identity, value: `${emailParts[0]}+${user.external_id}@${emailParts[1]}`.toLowerCase() };
       }
     }
     return identity;
@@ -894,9 +894,10 @@ function unaliasUserEmail(user) {
   
   if (newEmail && isAliasedEmail(newEmail)) {
     newEmail = extractUnaliasedEmail(newEmail);
+    if (newEmail) newEmail = newEmail.toLowerCase();
     emailWasUnaliased = true;
   }
-  
+
   // Process identities
   let identities = user.identities;
   if (typeof identities === "string") {
@@ -909,14 +910,15 @@ function unaliasUserEmail(user) {
   if (!Array.isArray(identities)) {
     identities = [];
   }
-  
+
   const processedIdentities = identities.map((identity) => {
     if (identity.type === "email" && identity.value && isAliasedEmail(identity.value)) {
-      return { ...identity, value: extractUnaliasedEmail(identity.value) };
+      const unaliased = extractUnaliasedEmail(identity.value);
+      return { ...identity, value: unaliased ? unaliased.toLowerCase() : identity.value };
     }
     return identity;
   });
-  
+
   // Update database (use external_id so we update only this profile row)
   const updateStmt = db.prepare(`
     UPDATE user_mappings
@@ -925,9 +927,9 @@ function unaliasUserEmail(user) {
         updated_at = CURRENT_TIMESTAMP
     WHERE external_id = ?
   `);
-  
+
   updateStmt.run(newEmail, JSON.stringify(processedIdentities), user.external_id);
-  
+
   return { newEmail, processedIdentities, emailWasUnaliased };
 }
 

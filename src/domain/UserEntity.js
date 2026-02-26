@@ -58,11 +58,11 @@ export class UserEntity {
   addIdentity(type, value) {
     if (!type || !value) return;
 
-    const normalizedValue = value.trim();
-    if (!normalizedValue) return;
-
     const normalizedType =
       type === "phone" ? "phone_number" : type === "phone_number" ? "phone_number" : type;
+    const normalizedValue =
+      normalizedType === "email" ? (cleanEmail(value) || value.trim()) : value.trim();
+    if (!normalizedValue) return;
 
     const key = `${normalizedType}:${normalizedValue.toLowerCase()}`;
     if (this._identityIndex.has(key)) {

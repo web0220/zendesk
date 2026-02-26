@@ -53,13 +53,34 @@ export function extractMappedFields(mappedData = {}) {
     return String(value);
   };
 
+  const normalizeEmailForDb = (v) =>
+    v != null && v !== "" ? String(v).trim().toLowerCase() : null;
+
+  const normalizeIdentitiesEmailsForDb = (identities) => {
+    if (identities == null) return null;
+    let arr = identities;
+    if (typeof identities === "string") {
+      try {
+        arr = JSON.parse(identities);
+      } catch {
+        return identities;
+      }
+    }
+    if (!Array.isArray(arr)) return toJsonString(identities);
+    const normalized = arr.map((id) => {
+      if (!id || id.type !== "email" || !id.value) return id;
+      return { ...id, value: normalizeEmailForDb(id.value) || id.value };
+    });
+    return toJsonString(normalized);
+  };
+
   const extracted = {
     name: mappedData.name || null,
-    email: mappedData.email || null,
+    email: normalizeEmailForDb(mappedData.email),
     phone: mappedData.phone || null,
     organization_id: organizationId,
     user_type: userType,
-    identities: toJsonString(mappedData.identities),
+    identities: normalizeIdentitiesEmailsForDb(mappedData.identities),
     market: toJsonString(userFields.market),
     zendesk_primary: mappedData.zendesk_primary === true ? 1 : 0,
     shared_phone_number: userFields.shared_phone_number ?? null,

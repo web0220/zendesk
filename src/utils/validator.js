@@ -1,7 +1,8 @@
 import { logger } from "../config/logger.js";
 
 /**
- * Clean email: remove angle brackets, trailing slashes, etc.
+ * Clean email: remove angle brackets, trailing slashes, normalize to lowercase.
+ * Lowercase ensures duplicate email detection works (David@gmail.com === david@gmail.com).
  * @param {string} email
  * @returns {string}
  */
@@ -12,7 +13,7 @@ export function cleanEmail(email) {
   cleaned = cleaned.replace(/^<|>$/g, "");
   // Remove trailing slashes: email@example.com/ -> email@example.com
   cleaned = cleaned.replace(/\/+$/, "");
-  return cleaned;
+  return cleaned.toLowerCase();
 }
 
 /**   
