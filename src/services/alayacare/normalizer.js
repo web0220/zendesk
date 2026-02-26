@@ -601,7 +601,9 @@ export function normalizeCaregiverRecord(caregiver) {
       primaryEmail = emails[0];
     }
 
-    const market = extractMarket(groups) || caregiver.market || caregiver.branch?.name || null;
+    // Market only from LOC groups or explicit caregiver.market; do NOT use branch.name — list API
+    // can return branch (e.g. "NY") while detail API does not, causing inconsistent "ny" in full sync.
+    const market = extractMarket(groups) || null;
     const marketValues = Array.isArray(market)
       ? market
       : typeof market === "string"

@@ -1423,6 +1423,60 @@ export function collapseAllAliasedProfilesPerAcId() {
 }
 
 /**
+ * For every duplicate profile (external_id has extra suffix, i.e. external_id !== ac_id, e.g. client_1051_son),
+ * set the main profile as associated user: associationN = ac_id (main profile's external_id),
+ * relationN = client_relationship. Uses first available slot (1, 2, or 3); skips if all three are already filled.
+ */
+function setMainProfileAssociationOnDuplicateProfiles() {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT external_id, ac_id, client_relationship,
+        association1, relation1, association2, relation2, association3, relation3
+       FROM user_mappings
+       WHERE current_active = 1 AND external_id != ac_id`
+    )
+    .all();
+
+  const isFilled = (v) => v != null && String(v).trim() !== "";
+
+  const update1 = db.prepare(
+    `UPDATE user_mappings SET association1 = ?, relation1 = ?, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`
+  );
+  const update2 = db.prepare(
+    `UPDATE user_mappings SET association2 = ?, relation2 = ?, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`
+  );
+  const update3 = db.prepare(
+    `UPDATE user_mappings SET association3 = ?, relation3 = ?, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`
+  );
+
+  let count = 0;
+  for (const row of rows) {
+    const mainProfileExternalId = row.ac_id;
+    const relation = row.client_relationship != null ? String(row.client_relationship).trim() : null;
+    const a1 = isFilled(row.association1);
+    const a2 = isFilled(row.association2);
+    const a3 = isFilled(row.association3);
+    if (a1 && a2 && a3) continue;
+    if (!a1) {
+      update1.run(mainProfileExternalId, relation, row.external_id);
+      count++;
+    } else if (!a2) {
+      update2.run(mainProfileExternalId, relation, row.external_id);
+      count++;
+    } else {
+      update3.run(mainProfileExternalId, relation, row.external_id);
+      count++;
+    }
+  }
+  if (rows.length > 0) {
+    logger.info(
+      `   📎 Set main profile association on ${count} duplicate profile(s) (${rows.length} total non-main profiles)`
+    );
+  }
+}
+
+/**
  * Main function: Process email duplicates only.
  * Phone duplicate processing is commented out per business requirements.
  * Pass raw clients and caregivers so we can store association/relation (non-primary users whose raw response has primary's email) on primary's main profile.
@@ -1445,6 +1499,9 @@ export function processDuplicateEmailsAndPhones(rawClients = [], rawCaregivers =
   if (phoneUsersNeedingPrimary.length > 0) {
     logger.error(`❌ Found ${phoneUsersNeedingPrimary.length} user(s) in phone groups without zendesk_primary tag`);
   }
+
+  // Step 2.4: For all duplicate profiles (external_id !== ac_id), set main profile as association (first free slot 1–3)
+  setMainProfileAssociationOnDuplicateProfiles();
 
   logger.info("✅ Finished processing email and phone duplicates");
   
