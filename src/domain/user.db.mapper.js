@@ -146,9 +146,11 @@ export function convertDatabaseRowToZendeskUser(row) {
   if (relationship != null) userFields.relationship = relationship;
 
   // Association and relation fields (DB columns → Zendesk custom field keys)
-  if (row.association1 !== undefined && row.association1 !== null) userFields.associated_client_1 = row.association1;
-  if (row.association2 !== undefined && row.association2 !== null) userFields.associated_client_2 = row.association2;
-  if (row.association3 !== undefined && row.association3 !== null) userFields.associated_client_3 = row.association3;
+  // Lookup fields (associated_client_*) require "external_id:" prefix so Zendesk finds the user by external_id; raw value is interpreted as numeric ID and fails.
+  if (row.association1 !== undefined && row.association1 !== null) userFields.associated_client_1 = `external_id:${String(row.association1).trim()}`;
+  if (row.association2 !== undefined && row.association2 !== null) userFields.associated_client_2 = `external_id:${String(row.association2).trim()}`;
+  if (row.association3 !== undefined && row.association3 !== null) userFields.associated_client_3 = `external_id:${String(row.association3).trim()}`;
+  // Text fields (client_relationship_*) are sent as-is
   if (row.relation1 !== undefined && row.relation1 !== null) userFields.client_relationship_1 = row.relation1;
   if (row.relation2 !== undefined && row.relation2 !== null) userFields.client_relationship_2 = row.relation2;
   if (row.relation3 !== undefined && row.relation3 !== null) userFields.client_relationship_3 = row.relation3;
