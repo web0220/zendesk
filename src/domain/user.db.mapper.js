@@ -145,6 +145,14 @@ export function convertDatabaseRowToZendeskUser(row) {
   const relationship = row.client_relationship ?? row.relationship ?? null;
   if (relationship != null) userFields.relationship = relationship;
 
+  // Association and relation fields (DB columns → Zendesk custom field keys)
+  if (row.association1 !== undefined && row.association1 !== null) userFields.associated_client_1 = row.association1;
+  if (row.association2 !== undefined && row.association2 !== null) userFields.associated_client_2 = row.association2;
+  if (row.association3 !== undefined && row.association3 !== null) userFields.associated_client_3 = row.association3;
+  if (row.relation1 !== undefined && row.relation1 !== null) userFields.client_relationship_1 = row.relation1;
+  if (row.relation2 !== undefined && row.relation2 !== null) userFields.client_relationship_2 = row.relation2;
+  if (row.relation3 !== undefined && row.relation3 !== null) userFields.client_relationship_3 = row.relation3;
+
   if (row.zendesk_primary === 1 || row.zendesk_primary === true) {
     userFields.shared_phone_number = null;
   } else if (row.shared_phone_number !== null && row.shared_phone_number !== undefined) {
