@@ -27,7 +27,7 @@ export async function pollJobStatus(jobId, intervalMs = 3000, timeoutMs = 60000)
       return statusData.job_status;
     }
 
-    logger.debug(`⌛ Job ${jobId} still ${status} (${completed}/${total})... waiting ${intervalMs}ms`);
+    // logger.debug(`⌛ Job ${jobId} still ${status} (${completed}/${total})... waiting ${intervalMs}ms`);
     await new Promise((res) => setTimeout(res, intervalMs));
   }
 

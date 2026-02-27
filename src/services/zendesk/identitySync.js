@@ -197,11 +197,11 @@ export async function syncUserIdentitiesToMatchDatabase(userId, databaseIdentiti
   }
 
   if (identitiesToDelete.length > 0) {
-    logger.info(`   🗑️  Deleting ${identitiesToDelete.length} identity(ies) from Zendesk that are not in database`);
+    // logger.info(`   🗑️  Deleting ${identitiesToDelete.length} identity(ies) from Zendesk that are not in database`);
     for (const identity of identitiesToDelete) {
       try {
         await deleteUserIdentity(userId, identity.id);
-        logger.info(`   ✅ Deleted ${identity.type} identity ${identity.id} (${identity.value})`);
+        // logger.info(`   ✅ Deleted ${identity.type} identity ${identity.id} (${identity.value})`);
       } catch (error) {
         logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
       }
@@ -240,7 +240,7 @@ export async function syncUserIdentitiesToMatchDatabase(userId, databaseIdentiti
   }
 
   if (identitiesToDelete.length === 0 && identitiesToAdd.length === 0) {
-    logger.debug(`   ✅ Zendesk identities already match database for user ${userId}`);
+    // logger.debug(`   ✅ Zendesk identities already match database for user ${userId}`);
   }
 }
 

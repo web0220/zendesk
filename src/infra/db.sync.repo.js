@@ -635,11 +635,11 @@ export async function processNonActiveUser(user) {
     );
 
     if (identitiesToDelete.length > 0) {
-      logger.info(`   🗑️  Deleting ${identitiesToDelete.length} email/phone identity(ies) from Zendesk`);
+      // logger.info(`   🗑️  Deleting ${identitiesToDelete.length} email/phone identity(ies) from Zendesk`);
       for (const identity of identitiesToDelete) {
         try {
           await deleteUserIdentity(zendeskUserId, identity.id);
-          logger.info(`   ✅ Deleted ${identity.type} identity ${identity.id} (${identity.value})`);
+          // logger.info(`   ✅ Deleted ${identity.type} identity ${identity.id} (${identity.value})`);
         } catch (error) {
           logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
         }
