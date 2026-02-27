@@ -221,7 +221,12 @@ export function normalizeClientRecord(client) {
     }
 
     // Extract emails with priority ranking
-    const emailProfiles = extractEmailsWithPriority(client);
+    let emailProfiles = extractEmailsWithPriority(client);
+    // Remove internal Alvita/AlayaCare emails for clients (we don't want profiles for those)
+    if (emailProfiles && emailProfiles.length > 0) {
+      const allowedEmailsSet = new Set(removeInternalEmails(emailProfiles.map((ep) => ep.email)));
+      emailProfiles = emailProfiles.filter((ep) => allowedEmailsSet.has(ep.email));
+    }
     
     // Also check for contacts with unique phone numbers but no email
     const contactsWithUniquePhones = extractContactsWithUniquePhones(client, emailProfiles);
