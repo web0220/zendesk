@@ -5,7 +5,6 @@ import {
   collectCaregiverEmailDetails,
   collectCaregiverPhoneDetails,
   findEmailsDeep,
-  removeInternalEmails,
   sanitizeMarketValues,
 } from "./identity.extractor.js";
 import {
@@ -195,6 +194,20 @@ function buildCaregiverUserFields({ marketArray, caregiverStatusValue, departmen
  * Returns true if the client has no usable value in demographics.email (raw AlayaCare response).
  * "No value" means: missing, null, or a string that is empty or whitespace-only.
  */
+const INTERNAL_EMAIL_DOMAINS = ["@alvitacare.com", "@alayacare.com"];
+
+function isInternalEmail(email) {
+  if (!email || typeof email !== "string") return false;
+  const lower = email.toLowerCase().trim();
+  return INTERNAL_EMAIL_DOMAINS.some((domain) => lower.endsWith(domain));
+}
+
+/** Client name → lowercase no-space + @noemail.com (e.g. "Helene McLoughlin" → "helenemcloughlin@noemail.com") */
+function toNoEmailFromClientName(clientName) {
+  const base = (clientName || "").trim().toLowerCase().replace(/\s+/g, "");
+  return (base || "unknown") + "@noemail.com";
+}
+
 export function hasNoDemographicsEmail(client) {
   const demographics = client?.demographics || {};
   const email = demographics.email;
@@ -208,6 +221,7 @@ export function normalizeClientRecord(client) {
     const demographics = client.demographics || {};
     const firstName = demographics.first_name;
     const lastName = demographics.last_name;
+    const clientDisplayName = `${(firstName ?? "").trim()} ${(lastName ?? "").trim()}`.trim() || "unknown";
 
     const status = client.status || null;
     const groups = client.groups || [];
@@ -216,16 +230,19 @@ export function normalizeClientRecord(client) {
     // Detect and record to log file when client has no value in demographics.email (raw AlayaCare API)
     if (hasNoDemographicsEmail(client)) {
       const acId = String(client.id ?? client.ac_id ?? "unknown");
-      const name = `${(firstName ?? "").trim()} ${(lastName ?? "").trim()}`.trim();
-      logClientNoDemographicsEmail(acId, name);
+      logClientNoDemographicsEmail(acId, clientDisplayName);
     }
 
     // Extract emails with priority ranking
     let emailProfiles = extractEmailsWithPriority(client);
-    // Remove internal Alvita/AlayaCare emails for clients (we don't want profiles for those)
+    // Replace internal Alvita/AlayaCare emails with name@noemail.com (don't drop the profile)
     if (emailProfiles && emailProfiles.length > 0) {
-      const allowedEmailsSet = new Set(removeInternalEmails(emailProfiles.map((ep) => ep.email)));
-      emailProfiles = emailProfiles.filter((ep) => allowedEmailsSet.has(ep.email));
+      const noEmailPlaceholder = toNoEmailFromClientName(clientDisplayName);
+      for (const ep of emailProfiles) {
+        if (isInternalEmail(ep.email)) {
+          ep.email = noEmailPlaceholder;
+        }
+      }
     }
     
     // Also check for contacts with unique phone numbers but no email

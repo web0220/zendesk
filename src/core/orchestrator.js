@@ -469,7 +469,7 @@ export async function runSync() {
       }
 
       logger.info(
-        // `✅ Batch ${index + 1} processed: ${jobResults.length} results (expected ${batch.length} users)`
+        `✅ Batch ${index + 1} processed: ${jobResults.length} results (expected ${batch.length} users)`
       );
 
       if (jobResults.length !== batch.length) {
