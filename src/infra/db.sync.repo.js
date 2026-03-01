@@ -4,7 +4,7 @@ import { getDb } from "./db.api.js";
 import { fetchClientDetail, fetchCaregiverDetail, fetchClientStatusOnly, fetchCaregiverStatusOnly } from "../services/alayacare/alayacare.api.js";
 import { mapClientUser, mapCaregiverUser } from "../services/alayacare/mapper.js";
 import { getUserIdentities, deleteUserIdentity, getUser, updateUserCustomFields, makeIdentityPrimary } from "../services/zendesk/zendesk.api.js";
-import { extractAllPhoneNumbers, isAliasedEmail } from "./db.duplicate.repo.js";
+import { extractAllEmails, extractAllPhoneNumbers, isAliasedEmail } from "./db.duplicate.repo.js";
 import { addIdentities } from "../services/zendesk/identitySync.js";
 import { isAlvitaCompanyMember } from "../utils/constants.js";
 
@@ -496,16 +496,39 @@ function updateUserStatusInDatabase(acId, status, userType) {
 }
 
 /**
- * Phase 3: Process non-active users - alias all emails, move all phones to shared_phone_number
- * 
- * Simplified logic:
- * 1. Fetch and map user data from AlayaCare
- * 2. Alias ALL emails (email field + identities) with email+external_id@domain
- * 3. Move ALL phones (phone field + identities) to shared_phone_number
- * 4. Delete ALL email and phone_number identities from Zendesk
- * 5. Add aliased emails as identities to Zendesk
- * 6. Update Zendesk user with aliased email and shared_phone_number field
- * 
+ * Returns the set of email addresses (lowercase) that appear on at least one other user
+ * (different external_id) in the database. Used to decide which emails to alias for
+ * deactivated primary users (only shared emails are aliased).
+ *
+ * @param {string} currentExternalId - external_id of the user to exclude
+ * @returns {Set<string>} Set of lowercase emails that are shared with other users
+ */
+function getEmailsSharedWithOtherUsers(currentExternalId) {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      "SELECT external_id, email, identities FROM user_mappings WHERE external_id != ?"
+    )
+    .all(currentExternalId);
+  const shared = new Set();
+  for (const row of rows) {
+    const emails = extractAllEmails({
+      email: row.email,
+      identities: row.identities,
+    });
+    emails.forEach((e) => shared.add(e.toLowerCase().trim()));
+  }
+  return shared;
+}
+
+/**
+ * Phase 3: Process non-active users.
+ *
+ * - For deactivated Zendesk primary users: alias only emails that are shared with other users,
+ *   move all phones to shared_phone_number, update Zendesk identities, update DB and Zendesk.
+ * - For deactivated non-primary users: leave email/phone/identities as-is; only update status
+ *   (and other fetch fields) in DB and status in Zendesk.
+ *
  * @param {Object} user - Non-active user from database
  * @returns {Promise<Object>} Result with success status and updated user data
  */
@@ -519,9 +542,12 @@ export async function processNonActiveUser(user) {
   const userType = user.user_type;
   const acId = user.ac_id;
   const zendeskUserId = user.zendesk_user_id;
+  const isPrimary = user.zendesk_primary === 1 || user.zendesk_primary === true;
 
   try {
-    logger.info(`📡 Phase 3: Processing non-active ${userType} ${sourceAcId} (ac_id: ${acId})`);
+    logger.info(
+      `📡 Phase 3: Processing non-active ${userType} ${sourceAcId} (ac_id: ${acId})${isPrimary ? " [zendesk_primary - will alias email]" : " [non-primary - leave as-is]"}`
+    );
 
     // Fetch full user data from AlayaCare
     let rawUserData = null;
@@ -556,25 +582,6 @@ export async function processNonActiveUser(user) {
     const fields = extractMappedFields(mappedPayload);
     const externalId = mappedPayload.external_id;
 
-    // Step 1: Alias ALL emails (email field + identities)
-    // Track original emails before aliasing (needed to check against Zendesk primary email)
-    const originalEmails = new Set();
-    const aliasedEmails = [];
-    
-    // Alias email field
-    if (fields.email && !isAliasedEmail(fields.email)) {
-      originalEmails.add(fields.email.toLowerCase());
-      const emailParts = fields.email.split("@");
-      if (emailParts.length === 2) {
-        fields.email = `${emailParts[0]}+${externalId}@${emailParts[1]}`;
-        aliasedEmails.push(fields.email);
-        logger.info(`   🔄 Aliased email field: ${emailParts[0]}@${emailParts[1]} → ${fields.email}`);
-      }
-    } else if (fields.email) {
-      aliasedEmails.push(fields.email); // Already aliased
-    }
-
-    // Alias email identities
     let identities = fields.identities;
     if (typeof identities === "string") {
       try {
@@ -587,216 +594,226 @@ export async function processNonActiveUser(user) {
       identities = [];
     }
 
-    const aliasedEmailIdentities = [];
-    const nonEmailIdentities = [];
+    // Only for deactivated Zendesk primary users: alias only emails shared with other users; move phones to shared_phone_number.
+    // Non-primary deactivated users: leave email/phone/identities as they were.
+    if (isPrimary) {
+      // Step 1: Alias only emails that are shared with other users (leave non-shared as-is)
+      const sharedEmailSet = getEmailsSharedWithOtherUsers(user.external_id);
+      const emailIdentitiesToUse = [];
+      const nonEmailIdentities = [];
 
-    for (const identity of identities) {
-      if (identity.type === "email" && identity.value) {
-        if (!isAliasedEmail(identity.value)) {
-          originalEmails.add(identity.value.toLowerCase());
-          const emailParts = identity.value.split("@");
+      if (fields.email && !isAliasedEmail(fields.email)) {
+        const normalized = fields.email.toLowerCase().trim();
+        if (sharedEmailSet.has(normalized)) {
+          const emailParts = fields.email.split("@");
           if (emailParts.length === 2) {
-            const aliasedEmail = `${emailParts[0]}+${externalId}@${emailParts[1]}`;
-            aliasedEmailIdentities.push({ type: "email", value: aliasedEmail });
-            aliasedEmails.push(aliasedEmail);
-            logger.info(`   🔄 Aliased email identity: ${identity.value} → ${aliasedEmail}`);
+            fields.email = `${emailParts[0]}+${externalId}@${emailParts[1]}`;
+            emailIdentitiesToUse.push({ type: "email", value: fields.email });
+            logger.info(`   🔄 Aliased shared email field: ${emailParts[0]}@${emailParts[1]} → ${fields.email}`);
           }
         } else {
-          aliasedEmailIdentities.push(identity); // Already aliased
-          aliasedEmails.push(identity.value);
+          emailIdentitiesToUse.push({ type: "email", value: fields.email });
+          logger.info(`   ⏭️  Email field not shared with others, left as-is: ${fields.email}`);
         }
-      } else if (identity.type !== "phone" && identity.type !== "phone_number") {
-        // Keep non-email, non-phone identities
-        nonEmailIdentities.push(identity);
+      } else if (fields.email) {
+        emailIdentitiesToUse.push({ type: "email", value: fields.email });
       }
-      // Skip phone identities - they will be moved to shared_phone_number
-    }
 
-    // Step 2: Move ALL phones to shared_phone_number
-    const allPhones = extractAllPhoneNumbers({ phone: fields.phone, identities: identities });
-    const sharedPhoneNumberStr = allPhones.length > 0 ? allPhones.join("\n") : null;
-    
-    // Update fields: phone = NULL, identities = only non-email, non-phone identities + aliased emails
-    fields.phone = null;
-    fields.identities = [...nonEmailIdentities, ...aliasedEmailIdentities];
-    fields.shared_phone_number = sharedPhoneNumberStr;
-
-    if (allPhones.length > 0) {
-      logger.info(`   📞 Moved ${allPhones.length} phone(s) to shared_phone_number: ${allPhones.join(", ")}`);
-    }
-
-    // Step 3: Delete all email and phone identities from Zendesk
-    // First, get current identities to delete
-    logger.info(`   🔄 Getting current identities from Zendesk for user ${zendeskUserId}...`);
-    const currentZendeskIdentities = await getUserIdentities(zendeskUserId);
-    
-    const identitiesToDelete = currentZendeskIdentities.filter(
-      (identity) => identity.type === "email" || identity.type === "phone_number"
-    );
-
-    if (identitiesToDelete.length > 0) {
-      // logger.info(`   🗑️  Deleting ${identitiesToDelete.length} email/phone identity(ies) from Zendesk`);
-      for (const identity of identitiesToDelete) {
-        try {
-          await deleteUserIdentity(zendeskUserId, identity.id);
-          // logger.info(`   ✅ Deleted ${identity.type} identity ${identity.id} (${identity.value})`);
-        } catch (error) {
-          logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
-        }
-      }
-    }
-
-    // Step 4: Add aliased emails as identities to Zendesk
-    if (aliasedEmails.length > 0) {
-      logger.info(`   ➕ Adding ${aliasedEmails.length} aliased email(s) as identities to Zendesk`);
-      const emailIdentitiesToAdd = aliasedEmails.map(email => ({ type: "email", value: email }));
-      await addIdentities(zendeskUserId, emailIdentitiesToAdd);
-    }
-
-    // Step 5: Get current Zendesk user and identities, then update primary email if needed
-    logger.info(`   🔄 Getting current user and identities from Zendesk for user ${zendeskUserId}...`);
-    const zendeskUser = await getUser(zendeskUserId);
-    const zendeskIdentities = await getUserIdentities(zendeskUserId);
-
-    if (zendeskUser && zendeskUser.email) {
-      const zendeskPrimaryEmail = zendeskUser.email.toLowerCase();
-      
-      // Check if primary email is already aliased
-      const isPrimaryEmailAliased = isAliasedEmail(zendeskUser.email);
-      
-      if (isPrimaryEmailAliased) {
-        logger.info(`   ✅ Primary email ${zendeskUser.email} is already aliased, no update needed`);
-      } else {
-        // Primary email is not aliased (e.g., abc@gmail.com)
-        // We need to make an aliased email primary (e.g., abc+client_0000@gmail.com)
-        logger.info(`   🔍 Primary email ${zendeskUser.email} is not aliased, finding aliased email identity to make primary...`);
-        
-        // Helper function to extract unaliased email from +externalId pattern
-        const extractUnaliasedFromExternalId = (aliasedEmail, externalId) => {
-          if (!aliasedEmail || !aliasedEmail.includes('+') || !aliasedEmail.includes('@')) {
-            return aliasedEmail;
-          }
-          const [localPart, domain] = aliasedEmail.split('@');
-          // Remove +externalId from local part
-          const unaliasedLocal = localPart.replace(`+${externalId}`, '');
-          return `${unaliasedLocal}@${domain}`;
-        };
-
-        // Find aliased email identity whose unaliased form matches the primary email
-        // This finds abc+client_0000@gmail.com when primary is abc@gmail.com
-        const matchingAliasedIdentity = zendeskIdentities.find((identity) => {
-          if (identity.type !== "email" || !identity.value) {
-            return false;
-          }
-          // Check if this identity is aliased
+      for (const identity of identities) {
+        if (identity.type === "email" && identity.value) {
           if (!isAliasedEmail(identity.value)) {
-            return false;
-          }
-          // Check if unaliased form matches primary email
-          const unaliased = extractUnaliasedFromExternalId(identity.value.toLowerCase(), externalId);
-          return unaliased === zendeskPrimaryEmail;
-        });
-
-        if (matchingAliasedIdentity) {
-          logger.info(`   🔄 Found aliased identity ${matchingAliasedIdentity.id} (${matchingAliasedIdentity.value}), making it primary...`);
-          try {
-            // Store the old primary email before making new one primary
-            const oldPrimaryEmail = zendeskUser.email.toLowerCase();
-            
-            await makeIdentityPrimary(zendeskUserId, matchingAliasedIdentity.id);
-            logger.info(`   ✅ Made aliased identity ${matchingAliasedIdentity.id} (${matchingAliasedIdentity.value}) primary`);
-            
-            // After making a new identity primary, the old primary email (abc@gmail.com) becomes a secondary identity
-            // We need to delete it since it's a non-aliased email
-            logger.info(`   🔄 Old primary email ${oldPrimaryEmail} became a secondary identity, fetching updated identities to delete it...`);
-            
-            // Fetch updated identities to find the old primary email as a secondary identity
-            const updatedIdentities = await getUserIdentities(zendeskUserId);
-            const oldPrimaryIdentity = updatedIdentities.find(
-              (identity) => identity.type === "email" && identity.value?.toLowerCase() === oldPrimaryEmail
-            );
-            
-            if (oldPrimaryIdentity) {
-              logger.info(`   🗑️  Deleting old primary email identity ${oldPrimaryIdentity.id} (${oldPrimaryIdentity.value}) - it's a non-aliased email`);
-              try {
-                await deleteUserIdentity(zendeskUserId, oldPrimaryIdentity.id);
-                logger.info(`   ✅ Deleted old primary email identity ${oldPrimaryIdentity.id}`);
-              } catch (error) {
-                logger.error(`   ❌ Failed to delete old primary email identity ${oldPrimaryIdentity.id}: ${error.message}`);
+            const normalized = identity.value.toLowerCase().trim();
+            if (sharedEmailSet.has(normalized)) {
+              const emailParts = identity.value.split("@");
+              if (emailParts.length === 2) {
+                const aliasedEmail = `${emailParts[0]}+${externalId}@${emailParts[1]}`;
+                emailIdentitiesToUse.push({ type: "email", value: aliasedEmail });
+                logger.info(`   🔄 Aliased shared email identity: ${identity.value} → ${aliasedEmail}`);
               }
             } else {
-              logger.warn(`   ⚠️  Old primary email ${oldPrimaryEmail} not found in identities after making aliased email primary`);
+              emailIdentitiesToUse.push(identity);
+              logger.info(`   ⏭️  Email identity not shared with others, left as-is: ${identity.value}`);
             }
-          } catch (error) {
-            logger.error(`   ❌ Failed to make identity ${matchingAliasedIdentity.id} primary: ${error.message}`);
+          } else {
+            emailIdentitiesToUse.push(identity);
           }
-        } else {
-          logger.warn(`   ⚠️  Could not find an aliased email identity whose unaliased form matches primary email ${zendeskUser.email}`);
-          logger.warn(`   ⚠️  Available email identities: ${zendeskIdentities.filter(i => i.type === 'email').map(i => i.value).join(', ')}`);
+        } else if (identity.type !== "phone" && identity.type !== "phone_number") {
+          nonEmailIdentities.push(identity);
         }
       }
-    }
 
-    // Step 6: Update database
-    const db = getDb();
-    const { acKey } = buildStorageKeys(mappedPayload, fields);
-    
-    const updateStmt = db.prepare(`
-      UPDATE user_mappings
-      SET email = ?,
-          phone = ?,
-          coordinator_pod = ?,
-          case_rating = ?,
-          client_status = ?,
-          clinical_rn_manager = ?,
-          sales_rep = ?,
-          caregiver_status = ?,
-          department = ?,
-          market = ?,
-          identities = ?,
-          zendesk_primary = ?,
-          shared_phone_number = ?,
-          non_active_status_fetched = 1,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE ac_id = ?
-    `);
+      // Step 2: Move ALL phones to shared_phone_number
+      const allPhones = extractAllPhoneNumbers({ phone: fields.phone, identities });
+      const sharedPhoneNumberStr = allPhones.length > 0 ? allPhones.join("\n") : null;
+      fields.phone = null;
+      fields.identities = [...nonEmailIdentities, ...emailIdentitiesToUse];
+      fields.shared_phone_number = sharedPhoneNumberStr;
+      if (allPhones.length > 0) {
+        logger.info(`   📞 Moved ${allPhones.length} phone(s) to shared_phone_number: ${allPhones.join(", ")}`);
+      }
 
-    updateStmt.run(
-      fields.email,
-      fields.phone,
-      fields.coordinator_pod,
-      fields.case_rating,
-      fields.client_status,
-      fields.clinical_rn_manager,
-      fields.sales_rep,
-      fields.caregiver_status,
-      fields.department,
-      fields.market,
-      JSON.stringify(fields.identities),
-      fields.zendesk_primary ? 1 : 0,
-      fields.shared_phone_number,
-      acKey
-    );
+      // Step 3: Delete all email and phone identities from Zendesk
+      logger.info(`   🔄 Getting current identities from Zendesk for user ${zendeskUserId}...`);
+      const currentZendeskIdentities = await getUserIdentities(zendeskUserId);
+      const identitiesToDelete = currentZendeskIdentities.filter(
+        (identity) => identity.type === "email" || identity.type === "phone_number"
+      );
+      if (identitiesToDelete.length > 0) {
+        for (const identity of identitiesToDelete) {
+          try {
+            await deleteUserIdentity(zendeskUserId, identity.id);
+          } catch (error) {
+            logger.error(`   ❌ Failed to delete identity ${identity.id}: ${error.message}`);
+          }
+        }
+      }
 
-    logger.info(`   ✅ Updated non-active user ${acId} in database`);
+      // Step 4: Add email identities to Zendesk (shared = aliased, non-shared = as-is)
+      if (emailIdentitiesToUse.length > 0) {
+        logger.info(`   ➕ Adding ${emailIdentitiesToUse.length} email identity(ies) to Zendesk`);
+        await addIdentities(zendeskUserId, emailIdentitiesToUse);
+      }
 
-    // Step 7: Update Zendesk user with shared_phone_number field
-    // Note: Email field in user object is read-only, so we update via custom field if needed
-    // But we already added aliased emails as identities above
-    // Update shared_phone_number custom field
-    // Reuse zendeskUser from Step 5 (we already fetched it earlier)
-    if (zendeskUser) {
-      await updateUserCustomFields(zendeskUserId, {
-        ...zendeskUser.user_fields,
-        shared_phone_number: fields.shared_phone_number,
-      });
-      logger.info(`   ✅ Updated shared_phone_number field in Zendesk for user ${zendeskUserId}`);
+      // Step 5: Get current Zendesk user and identities, then update primary email if needed
+      logger.info(`   🔄 Getting current user and identities from Zendesk for user ${zendeskUserId}...`);
+      const zendeskUser = await getUser(zendeskUserId);
+      const zendeskIdentities = await getUserIdentities(zendeskUserId);
+
+      if (zendeskUser && zendeskUser.email) {
+        const zendeskPrimaryEmail = zendeskUser.email.toLowerCase();
+        const isPrimaryEmailAliased = isAliasedEmail(zendeskUser.email);
+
+        if (isPrimaryEmailAliased) {
+          logger.info(`   ✅ Primary email ${zendeskUser.email} is already aliased, no update needed`);
+        } else {
+          logger.info(`   🔍 Primary email ${zendeskUser.email} is not aliased, finding aliased email identity to make primary...`);
+          const extractUnaliasedFromExternalId = (aliasedEmail, extId) => {
+            if (!aliasedEmail || !aliasedEmail.includes("+") || !aliasedEmail.includes("@")) return aliasedEmail;
+            const [localPart, domain] = aliasedEmail.split("@");
+            return `${localPart.replace(`+${extId}`, "")}@${domain}`;
+          };
+          const matchingAliasedIdentity = zendeskIdentities.find((identity) => {
+            if (identity.type !== "email" || !identity.value) return false;
+            if (!isAliasedEmail(identity.value)) return false;
+            const unaliased = extractUnaliasedFromExternalId(identity.value.toLowerCase(), externalId);
+            return unaliased === zendeskPrimaryEmail;
+          });
+
+          if (matchingAliasedIdentity) {
+            logger.info(`   🔄 Found aliased identity ${matchingAliasedIdentity.id} (${matchingAliasedIdentity.value}), making it primary...`);
+            try {
+              const oldPrimaryEmail = zendeskUser.email.toLowerCase();
+              await makeIdentityPrimary(zendeskUserId, matchingAliasedIdentity.id);
+              logger.info(`   ✅ Made aliased identity ${matchingAliasedIdentity.id} (${matchingAliasedIdentity.value}) primary`);
+              const updatedIdentities = await getUserIdentities(zendeskUserId);
+              const oldPrimaryIdentity = updatedIdentities.find(
+                (identity) => identity.type === "email" && identity.value?.toLowerCase() === oldPrimaryEmail
+              );
+              if (oldPrimaryIdentity) {
+                logger.info(`   🗑️  Deleting old primary email identity ${oldPrimaryIdentity.id} (${oldPrimaryIdentity.value})`);
+                try {
+                  await deleteUserIdentity(zendeskUserId, oldPrimaryIdentity.id);
+                } catch (error) {
+                  logger.error(`   ❌ Failed to delete old primary email identity ${oldPrimaryIdentity.id}: ${error.message}`);
+                }
+              }
+            } catch (error) {
+              logger.error(`   ❌ Failed to make identity ${matchingAliasedIdentity.id} primary: ${error.message}`);
+            }
+          } else {
+            logger.warn(`   ⚠️  Could not find an aliased email identity matching primary email ${zendeskUser.email}`);
+          }
+        }
+      }
+
+      // Step 6 (primary): Update database with aliased data
+      const db = getDb();
+      const { acKey } = buildStorageKeys(mappedPayload, fields);
+      const updateStmt = db.prepare(`
+        UPDATE user_mappings
+        SET email = ?, phone = ?, coordinator_pod = ?, case_rating = ?, client_status = ?,
+            clinical_rn_manager = ?, sales_rep = ?, caregiver_status = ?, department = ?, market = ?,
+            identities = ?, zendesk_primary = ?, shared_phone_number = ?, non_active_status_fetched = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE ac_id = ?
+      `);
+      updateStmt.run(
+        fields.email,
+        fields.phone,
+        fields.coordinator_pod,
+        fields.case_rating,
+        fields.client_status,
+        fields.clinical_rn_manager,
+        fields.sales_rep,
+        fields.caregiver_status,
+        fields.department,
+        fields.market,
+        JSON.stringify(fields.identities),
+        fields.zendesk_primary ? 1 : 0,
+        fields.shared_phone_number,
+        acKey
+      );
+      logger.info(`   ✅ Updated non-active primary user ${acId} in database`);
+
+      // Step 7 (primary): Update Zendesk shared_phone_number (zendeskUser from Step 5)
+      if (zendeskUser) {
+        await updateUserCustomFields(zendeskUserId, {
+          ...zendeskUser.user_fields,
+          shared_phone_number: fields.shared_phone_number,
+        });
+        logger.info(`   ✅ Updated shared_phone_number in Zendesk for user ${zendeskUserId}`);
+      }
+    } else {
+      // Non-primary: leave email/phone/identities as-is; only update status and other fetch fields in DB, and status in Zendesk
+      const db = getDb();
+      const { acKey } = buildStorageKeys(mappedPayload, fields);
+      const existingEmail = user.email ?? null;
+      const existingPhone = user.phone ?? null;
+      const existingIdentities = user.identities;
+      const identitiesJson =
+        typeof existingIdentities === "string"
+          ? existingIdentities
+          : JSON.stringify(Array.isArray(existingIdentities) ? existingIdentities : []);
+
+      const updateStmt = db.prepare(`
+        UPDATE user_mappings
+        SET email = ?, phone = ?, coordinator_pod = ?, case_rating = ?, client_status = ?,
+            clinical_rn_manager = ?, sales_rep = ?, caregiver_status = ?, department = ?, market = ?,
+            identities = ?, shared_phone_number = ?, non_active_status_fetched = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE ac_id = ?
+      `);
+      updateStmt.run(
+        existingEmail,
+        existingPhone,
+        fields.coordinator_pod,
+        fields.case_rating,
+        fields.client_status,
+        fields.clinical_rn_manager,
+        fields.sales_rep,
+        fields.caregiver_status,
+        fields.department,
+        fields.market,
+        identitiesJson,
+        user.shared_phone_number ?? null,
+        acKey
+      );
+      logger.info(`   ✅ Updated non-active non-primary user ${acId} in database (status only; email/phone left as-is)`);
+
+      // Update Zendesk: only status (user_fields.userstatus)
+      const zendeskUserForStatus = await getUser(zendeskUserId);
+      if (zendeskUserForStatus) {
+        const newStatus = fields.client_status ?? fields.caregiver_status ?? null;
+        await updateUserCustomFields(zendeskUserId, {
+          ...zendeskUserForStatus.user_fields,
+          ...(newStatus != null && { userstatus: newStatus }),
+        });
+        logger.info(`   ✅ Updated status in Zendesk for user ${zendeskUserId}`);
+      }
     }
 
     // Reload user from database
-    const updatedUser = db
-      .prepare("SELECT * FROM user_mappings WHERE ac_id = ?")
-      .get(acKey);
+    const db = getDb();
+    const { acKey } = buildStorageKeys(mappedPayload, fields);
+    const updatedUser = db.prepare("SELECT * FROM user_mappings WHERE ac_id = ?").get(acKey);
     const hydratedUser = hydrateMapping(updatedUser);
 
     return { success: true, user: hydratedUser };
