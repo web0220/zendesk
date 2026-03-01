@@ -533,14 +533,15 @@ function getEmailsSharedWithOtherUsers(currentExternalId) {
  * @returns {Promise<Object>} Result with success status and updated user data
  */
 export async function processNonActiveUser(user) {
-  if (!user || !user.source_ac_id || !user.user_type || !user.zendesk_user_id) {
-    logger.warn(`⚠️ Cannot process non-active user: missing required fields for ac_id=${user?.ac_id}`);
+  if (!user || !user.source_ac_id || !user.user_type || !user.zendesk_user_id || !user.external_id) {
+    logger.warn(`⚠️ Cannot process non-active user: missing required fields for external_id=${user?.external_id}`);
     return { success: false, user: null };
   }
 
   const sourceAcId = user.source_ac_id;
   const userType = user.user_type;
   const acId = user.ac_id;
+  const rowExternalId = user.external_id;
   const zendeskUserId = user.zendesk_user_id;
   const isPrimary = user.zendesk_primary === 1 || user.zendesk_primary === true;
 
@@ -568,12 +569,17 @@ export async function processNonActiveUser(user) {
     // Map like Phase 1
     let entity = null;
     if (userType === "client") {
-      entity = mapClientUser(rawUserData);
+      const entities = mapClientUser(rawUserData);
+      // mapClientUser returns an array (one per email/profile); same ac_id can have multiple rows (e.g. client_6544 vs client_6544_wife)
+      // Pick the entity whose external_id matches THIS row so we don't overwrite one profile with another's email/data
+      if (Array.isArray(entities) && entities.length > 0) {
+        entity = entities.find((e) => e.externalId === rowExternalId) ?? entities[0];
+      }
     } else if (userType === "caregiver") {
       entity = mapCaregiverUser(rawUserData);
     }
 
-    if (!entity) {
+    if (!entity || typeof entity.toZendeskPayload !== "function") {
       logger.warn(`⚠️ Failed to map ${userType} ${sourceAcId} to UserEntity`);
       return { success: false, user: null };
     }
@@ -726,15 +732,14 @@ export async function processNonActiveUser(user) {
         }
       }
 
-      // Step 6 (primary): Update database with aliased data
+      // Step 6 (primary): Update database with aliased data (by external_id so multiple rows per ac_id are updated correctly)
       const db = getDb();
-      const { acKey } = buildStorageKeys(mappedPayload, fields);
       const updateStmt = db.prepare(`
         UPDATE user_mappings
         SET email = ?, phone = ?, coordinator_pod = ?, case_rating = ?, client_status = ?,
             clinical_rn_manager = ?, sales_rep = ?, caregiver_status = ?, department = ?, market = ?,
             identities = ?, zendesk_primary = ?, shared_phone_number = ?, non_active_status_fetched = 1, updated_at = CURRENT_TIMESTAMP
-        WHERE ac_id = ?
+        WHERE external_id = ?
       `);
       updateStmt.run(
         fields.email,
@@ -750,7 +755,7 @@ export async function processNonActiveUser(user) {
         JSON.stringify(fields.identities),
         fields.zendesk_primary ? 1 : 0,
         fields.shared_phone_number,
-        acKey
+        rowExternalId
       );
       logger.info(`   ✅ Updated non-active primary user ${acId} in database`);
 
@@ -765,7 +770,6 @@ export async function processNonActiveUser(user) {
     } else {
       // Non-primary: leave email/phone/identities as-is; only update status and other fetch fields in DB, and status in Zendesk
       const db = getDb();
-      const { acKey } = buildStorageKeys(mappedPayload, fields);
       const existingEmail = user.email ?? null;
       const existingPhone = user.phone ?? null;
       const existingIdentities = user.identities;
@@ -779,7 +783,7 @@ export async function processNonActiveUser(user) {
         SET email = ?, phone = ?, coordinator_pod = ?, case_rating = ?, client_status = ?,
             clinical_rn_manager = ?, sales_rep = ?, caregiver_status = ?, department = ?, market = ?,
             identities = ?, shared_phone_number = ?, non_active_status_fetched = 1, updated_at = CURRENT_TIMESTAMP
-        WHERE ac_id = ?
+        WHERE external_id = ?
       `);
       updateStmt.run(
         existingEmail,
@@ -794,7 +798,7 @@ export async function processNonActiveUser(user) {
         fields.market,
         identitiesJson,
         user.shared_phone_number ?? null,
-        acKey
+        rowExternalId
       );
       logger.info(`   ✅ Updated non-active non-primary user ${acId} in database (status only; email/phone left as-is)`);
 
@@ -810,10 +814,9 @@ export async function processNonActiveUser(user) {
       }
     }
 
-    // Reload user from database
+    // Reload user from database (by external_id so we get the single row we updated)
     const db = getDb();
-    const { acKey } = buildStorageKeys(mappedPayload, fields);
-    const updatedUser = db.prepare("SELECT * FROM user_mappings WHERE ac_id = ?").get(acKey);
+    const updatedUser = db.prepare("SELECT * FROM user_mappings WHERE external_id = ?").get(rowExternalId);
     const hydratedUser = hydrateMapping(updatedUser);
 
     return { success: true, user: hydratedUser };
