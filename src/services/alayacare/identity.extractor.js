@@ -1,5 +1,6 @@
 import { logger } from "../../config/logger.js";
 import { isValidEmail, normalizePhone } from "../../utils/validator.js";
+import { stripKnownEmailPrefixes } from "./email.priority.extractor.js";
 
 const DISALLOWED_MARKETS = new Set(["alvitacare"]);
 const PHONE_CAPTURE_REGEX =
@@ -185,8 +186,9 @@ export function collectAllEmailDetails(user, demographics = {}) {
 
   const addValue = (value, source) => {
     if (typeof value !== "string") return;
+    const normalized = stripKnownEmailPrefixes(value);
     const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
-    const matches = value.match(emailPattern);
+    const matches = normalized.match(emailPattern);
     if (matches) {
       matches.forEach((email) => pushEmail(email, source));
     }
@@ -237,8 +239,9 @@ export function collectCaregiverEmailDetails(user, demographics = {}) {
 
   const addValue = (value, source) => {
     if (typeof value !== "string") return;
+    const normalized = stripKnownEmailPrefixes(value);
     const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
-    const matches = value.match(emailPattern);
+    const matches = normalized.match(emailPattern);
     if (matches) {
       matches.forEach((email) => pushEmail(email, source));
     }

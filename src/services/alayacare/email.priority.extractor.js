@@ -2,14 +2,45 @@ import { logger } from "../../config/logger.js";
 import { isValidEmail, cleanEmail, normalizePhone } from "../../utils/validator.js";
 
 /**
+ * Strip known non-email prefixes from the start of a string so the real email is found.
+ * E.g. "N/A VA Referral-Davidbluepadilla@gmail.com" -> "Davidbluepadilla@gmail.com"
+ * @param {string} value
+ * @returns {string}
+ */
+export function stripKnownEmailPrefixes(value) {
+  if (!value || typeof value !== "string") return value;
+  let s = value.trim();
+  const prefixes = [
+    /^N\/A\s+/i,
+    /^VA\s+/i,
+    /^Referral-\s*/i,
+  ];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const p of prefixes) {
+      const match = s.match(p);
+      if (match) {
+        s = s.slice(match[0].length);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return s;
+}
+
+/**
  * Extract emails from a string value (handles comma-separated, space-separated, etc.)
+ * Strips known prefixes (e.g. "N/A VA Referral-") so "N/A VA Referral-Davidbluepadilla@gmail.com" yields "davidbluepadilla@gmail.com".
  * @param {string} value - String that may contain emails
  * @returns {Array<string>} Array of valid email addresses
  */
 function extractEmailsFromString(value) {
   if (!value || typeof value !== "string") return [];
+  const normalized = stripKnownEmailPrefixes(value);
   const emailPattern = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
-  const matches = value.match(emailPattern) || [];
+  const matches = normalized.match(emailPattern) || [];
   return matches.map(email => cleanEmail(email)).filter(email => isValidEmail(email));
 }
 
