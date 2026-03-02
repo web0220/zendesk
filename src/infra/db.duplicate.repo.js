@@ -417,14 +417,23 @@ function processEmailDuplicates(rawByAcId = new Map()) {
             .map((p) => pathToHumanReadable(p, f?.raw))
             .filter(Boolean)
             .join(", ") || null;
-        const a1 = found[0]?.ac_id ?? null;
-        const r1 = toRelation(found[0]);
-        const a2 = found[1]?.ac_id ?? null;
-        const r2 = toRelation(found[1]);
-        const a3 = found[2]?.ac_id ?? null;
-        const r3 = toRelation(found[2]);
+        // Ensure each association slot gets a different user (no duplicate external_id across slots)
+        const distinctByAcId = [];
+        const usedAcIds = new Set();
+        for (const f of found) {
+          if (usedAcIds.has(f.ac_id)) continue;
+          usedAcIds.add(f.ac_id);
+          distinctByAcId.push(f);
+          if (distinctByAcId.length >= 3) break;
+        }
+        const a1 = distinctByAcId[0]?.ac_id ?? null;
+        const r1 = toRelation(distinctByAcId[0]);
+        const a2 = distinctByAcId[1]?.ac_id ?? null;
+        const r2 = toRelation(distinctByAcId[1]);
+        const a3 = distinctByAcId[2]?.ac_id ?? null;
+        const r3 = toRelation(distinctByAcId[2]);
         updateAssocStmt.run(a1, r1, a2, r2, a3, r3, primaryProfileExternalId);
-        logger.info(`   📎 Stored ${found.length} association(s) on profile ${primaryProfileExternalId} (this email group): ${found.map((f) => f.ac_id).join(", ")}`);
+        logger.info(`   📎 Stored ${distinctByAcId.length} association(s) on profile ${primaryProfileExternalId} (this email group): ${distinctByAcId.map((f) => f.ac_id).join(", ")}`);
       }
     }
 
@@ -1467,6 +1476,12 @@ function setMainProfileAssociationOnDuplicateProfiles() {
   for (const row of rows) {
     const mainProfileExternalId = row.ac_id;
     const relation = row.client_relationship != null ? String(row.client_relationship).trim() : null;
+    // Do not add the same user to more than one slot; skip if main profile is already in any association
+    const alreadyInSlot =
+      (row.association1 != null && String(row.association1).trim() === mainProfileExternalId) ||
+      (row.association2 != null && String(row.association2).trim() === mainProfileExternalId) ||
+      (row.association3 != null && String(row.association3).trim() === mainProfileExternalId);
+    if (alreadyInSlot) continue;
     const a1 = isFilled(row.association1);
     const a2 = isFilled(row.association2);
     const a3 = isFilled(row.association3);

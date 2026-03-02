@@ -250,10 +250,20 @@ export function normalizeClientRecord(client) {
         }
       }
     }
-    
+
+    // Ensure main profile exists when demographics.email was missing/invalid (e.g. "N/A"): create main with client name + name@noemail.com
+    const hasDemographicsMainProfile = emailProfiles.some((ep) => ep.rank === 1 && ep.sourceField === "email");
+    if (!hasDemographicsMainProfile) {
+      const mainPlaceholderEmail = toNoEmailFromClientName(clientDisplayName);
+      emailProfiles = [
+        { email: mainPlaceholderEmail, rank: 1, sourceField: "email" },
+        ...emailProfiles,
+      ];
+    }
+
     // Also check for contacts with unique phone numbers but no email
     const contactsWithUniquePhones = extractContactsWithUniquePhones(client, emailProfiles);
-    
+
     if (emailProfiles.length === 0 && contactsWithUniquePhones.length === 0) {
       logger.warn(`⚠️ No emails or unique phone contacts found for client ${client.id || client.ac_id || "unknown"}`);
       return [];
