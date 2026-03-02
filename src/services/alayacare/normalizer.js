@@ -235,11 +235,17 @@ export function normalizeClientRecord(client) {
 
     // Extract emails with priority ranking
     let emailProfiles = extractEmailsWithPriority(client);
-    // Replace internal Alvita/AlayaCare emails with name@noemail.com (don't drop the profile)
+    // Handle internal Alvita/AlayaCare emails: if client has only internal email(s) → name@noemail.com;
+    // if client has other emails too → remove internal emails and keep the others
     if (emailProfiles && emailProfiles.length > 0) {
-      const noEmailPlaceholder = toNoEmailFromClientName(clientDisplayName);
-      for (const ep of emailProfiles) {
-        if (isInternalEmail(ep.email)) {
+      const hasOtherEmails = emailProfiles.some((ep) => !isInternalEmail(ep.email));
+      if (hasOtherEmails) {
+        // Remove internal emails; leave only non-internal
+        emailProfiles = emailProfiles.filter((ep) => !isInternalEmail(ep.email));
+      } else {
+        // Only internal email(s): replace with name@noemail.com (don't drop the profile)
+        const noEmailPlaceholder = toNoEmailFromClientName(clientDisplayName);
+        for (const ep of emailProfiles) {
           ep.email = noEmailPlaceholder;
         }
       }

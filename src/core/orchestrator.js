@@ -391,8 +391,16 @@ export async function runSync() {
       logger.warn(`   ⚠️  Excluding ${excludedFromPrimaryTag} non-primary user(s) due to missing zendesk_primary tag in email groups`);
     }
     
-    // Sync ALL users together (primary + non-primary) - they all need to be synced first
+    // Sync ALL users together (primary + non-primary). Order so main profiles (external_id === ac_id)
+    // are synced before duplicate profiles that reference them; Zendesk lookup fields (Associated Client 1/2/3)
+    // resolve by external_id and fail if the referenced user does not exist yet.
     const allUsersToSyncNow = [...primaryUsers, ...nonPrimaryUsersToSync];
+    allUsersToSyncNow.sort((a, b) => {
+      const aIsMain = a.external_id === a.ac_id ? 1 : 0;
+      const bIsMain = b.external_id === b.ac_id ? 1 : 0;
+      if (bIsMain !== aIsMain) return bIsMain - aIsMain; // main profiles first (so Zendesk can resolve lookups)
+      return 0;
+    });
     const zendeskUsers = hydrateEntitiesFromDb(allUsersToSyncNow);
     logger.info(`📦 Converted ${zendeskUsers.length} database records into Zendesk payloads (includes ${primaryUsers.length} primary + ${nonPrimaryUsersToSync.length} non-primary)`);
     

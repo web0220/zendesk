@@ -1345,9 +1345,10 @@ function toNoEmail(name) {
 /**
  * For each unique ac_id that has at least one profile with an aliased email:
  * - If ALL profiles (with email) have only aliased emails: collapse to single main profile (delete non-main, set main email to name@noemail.com).
- * - If at least one profile has non-aliased email: delete only the profiles that have aliased email (keep the rest; do not change any email).
+ * - If at least one profile has non-aliased email: for each profile with aliased email, if it is the main profile (external_id === ac_id)
+ *   then set its email to name@noemail.com (do not delete); otherwise delete the profile. Ensures every ac_id keeps its main profile.
  * Runs after saving mapped data and after processDuplicateEmailsAndPhones.
- * Main profile = the row where external_id === ac_id (e.g. client_6150).
+ * Main profile = the row where external_id === ac_id (e.g. client_3383).
  */
 export function collapseAllAliasedProfilesPerAcId() {
   const db = getDb();
@@ -1398,19 +1399,31 @@ export function collapseAllAliasedProfilesPerAcId() {
         `   Collapsed all-aliased ac_id=${acId} (${mainProfile.name}): kept main profile, deleted ${nonMain.length} other(s), email → ${noEmail}`
       );
     } else {
-      // At least one profile has non-aliased email: delete only profiles that have aliased email
-      const toDelete = profiles.filter((p) => p.email && isAliasedEmail(p.email));
-      if (toDelete.length > 0) {
+      // At least one profile has non-aliased email: for profiles with aliased email,
+      // if main profile (external_id === ac_id) → set email to name@noemail.com; otherwise delete
+      const withAliasedEmail = profiles.filter((p) => p.email && isAliasedEmail(p.email));
+      if (withAliasedEmail.length > 0) {
+        const mainWithAliased = mainProfile && withAliasedEmail.some((p) => p.external_id === acId);
+        const nonMainWithAliased = withAliasedEmail.filter((p) => p.external_id !== acId);
         const run = db.transaction(() => {
-          for (const p of toDelete) {
+          if (mainWithAliased) {
+            const noEmail = toNoEmail(mainProfile.name);
+            updateStmt.run(noEmail, acId);
+            logger.info(
+              `   ac_id=${acId}: main profile has aliased email → set email to ${noEmail} (kept main profile)`
+            );
+          }
+          for (const p of nonMainWithAliased) {
             deleteStmt.run(p.external_id);
           }
         });
         run();
         deletedOnlyCount += 1;
-        logger.info(
-          `   Removed ${toDelete.length} aliased-only profile(s) for ac_id=${acId}: ${toDelete.map((p) => p.external_id).join(", ")}`
-        );
+        if (nonMainWithAliased.length > 0) {
+          logger.info(
+            `   Removed ${nonMainWithAliased.length} aliased-only non-main profile(s) for ac_id=${acId}: ${nonMainWithAliased.map((p) => p.external_id).join(", ")}`
+          );
+        }
       }
     }
   }
