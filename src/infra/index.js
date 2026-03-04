@@ -14,6 +14,7 @@ export * from "./db.sync.repo.js";
 export * from "./db.user.repo.js";
 export * from "./db.duplicate.repo.js";
 export * from "./db.recurring.repo.js";
+export * from "./db.acBackend.repo.js";
 
 // Domain mappers
 export { convertDatabaseRowToZendeskUser } from "../domain/user.db.mapper.js";

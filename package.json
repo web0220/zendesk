@@ -5,15 +5,18 @@
   "main": "src/app/main.js",
   "type": "module",
   "scripts": {
-    "start": "NODE_ENV=production node src/app/main.js",
-    "dev": "NODE_ENV=development node src/app/main.js",
-    "recurring": "NODE_ENV=production node src/app/recurring.js",
-    "recurring:coordination": "NODE_ENV=production node src/app/recurring.js --task=coordination",
-    "recurring:concierge": "NODE_ENV=production node src/app/recurring.js --task=concierge",
-    "recurring:premium": "NODE_ENV=production node src/app/recurring.js --task=premium",
-    "daily:alert": "NODE_ENV=production node src/app/dailyAlert.js",
-    "caregiver:prep": "NODE_ENV=production node src/app/caregiverPrepCall.js"
-    },
+    "start": "cross-env NODE_ENV=production node src/app/main.js",
+    "dev": "cross-env NODE_ENV=development node src/app/main.js",
+    "recurring": "cross-env NODE_ENV=production node src/app/recurring.js",
+    "recurring:coordination": "cross-env NODE_ENV=production node src/app/recurring.js --task=coordination",
+    "recurring:concierge": "cross-env NODE_ENV=production node src/app/recurring.js --task=concierge",
+    "recurring:premium": "cross-env NODE_ENV=production node src/app/recurring.js --task=premium",
+    "daily:alert": "cross-env NODE_ENV=production node src/app/dailyAlert.js",
+    "caregiver:prep": "cross-env NODE_ENV=production node src/app/caregiverPrepCall.js",
+    "zendesk:backup": "cross-env NODE_ENV=production node src/app/zendeskBackup.js",
+    "alayacare:backend": "cross-env NODE_ENV=production node src/app/alayacareBackend.js",
+    "alayacare:discover": "node scripts/alayacare_discover_api.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -26,6 +29,7 @@
     "p-limit": "^5.0.0"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "jest": "^29.7.0"
   }
 }
