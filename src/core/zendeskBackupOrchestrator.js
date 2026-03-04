@@ -294,16 +294,24 @@ async function runFullBackupToDir({ backupDir, attachmentsDir, commentsDir }) {
   writeJson(path.join(backupDir, "tags.json"), tags);
   summary.tags = tags.length;
 
-  logger.info("📥 Backup: Fetching comments and attachments per ticket...");
+  const activeTickets = tickets.filter((t) => t.status !== "deleted");
+  const deletedCount = tickets.length - activeTickets.length;
+  if (deletedCount > 0) {
+    logger.info(`   Skipping ${deletedCount} deleted tickets for comments/attachments`);
+  }
+
+  logger.info(`📥 Backup: Fetching comments and attachments for ${activeTickets.length} tickets...`);
   let totalAttachmentsDownloaded = 0;
   let totalAttachmentsFailed = 0;
   const concurrencyComments = Number(process.env.ZENDESK_BACKUP_COMMENTS_CONCURRENCY) || 5;
-  const ticketIds = tickets.map((t) => t.id).filter(Boolean);
+  const ticketIds = activeTickets.map((t) => t.id).filter(Boolean);
 
   const commentTasks = ticketIds.map((ticketId) => async () => {
     const comments = await fetchTicketComments(ticketId);
-    writeJson(path.join(commentsDir, `${ticketId}.json`), comments);
-    summary.commentsWritten += 1;
+    if (comments.length > 0) {
+      writeJson(path.join(commentsDir, `${ticketId}.json`), comments);
+      summary.commentsWritten += 1;
+    }
     const { downloaded, failed } = await downloadCommentAttachments(comments, attachmentsDir, ticketId);
     totalAttachmentsDownloaded += downloaded;
     totalAttachmentsFailed += failed;
@@ -317,7 +325,7 @@ async function runFullBackupToDir({ backupDir, attachmentsDir, commentsDir }) {
   const manifest = { backupStarted: new Date().toISOString(), backupDir, summary };
   writeJson(path.join(backupDir, "manifest.json"), manifest);
 
-  logger.info(`✅ Zendesk Backup completed. Users: ${summary.users}, Tickets: ${summary.tickets}, Attachments: ${summary.attachmentsDownloaded}`);
+  logger.info(`✅ Zendesk Backup completed. Users: ${summary.users}, Tickets: ${summary.tickets} (${deletedCount} deleted), Attachments: ${summary.attachmentsDownloaded}`);
   return { backupDir, summary };
 }
 

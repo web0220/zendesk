@@ -5,7 +5,7 @@
 
 import fs from "fs";
 import path from "path";
-import { getZendeskClient, callZendesk, searchTicketsWithPagination } from "./zendesk.api.js";
+import { getZendeskClient, callZendesk } from "./zendesk.api.js";
 import { zendeskLimiter } from "../../utils/rateLimiters/zendesk.js";
 import { logger } from "../../config/logger.js";
 
@@ -45,13 +45,19 @@ export async function fetchAllUsers() {
 }
 
 /**
- * Fetch all tickets via search API with pagination.
+ * Earliest start_time for incremental ticket export (2010-01-01 UTC).
+ * Zendesk Search API hits "Search Response Limits" past ~1000 results; incremental export does not.
+ */
+const TICKETS_FULL_EXPORT_START = 1262304000;
+
+/**
+ * Fetch all tickets via Incremental Export API (paginated by next_page until end_of_stream).
+ * Use this for full backup instead of Search API, which returns 422 past ~1000 tickets.
  * @returns {Promise<Array>} All tickets
  */
 export async function fetchAllTickets() {
-  const query = "type:ticket";
-  logger.info("📥 Backup: Fetching tickets from Zendesk (search with pagination)...");
-  const tickets = await searchTicketsWithPagination(query);
+  logger.info("📥 Backup: Fetching tickets from Zendesk (incremental export from start of time)...");
+  const { tickets } = await fetchIncrementalTickets(TICKETS_FULL_EXPORT_START);
   logger.info(`✅ Backup: Tickets complete. Total: ${tickets.length}`);
   return tickets;
 }
@@ -66,16 +72,25 @@ export async function fetchTicketComments(ticketId) {
   let nextPath = `/tickets/${ticketId}/comments.json`;
 
   while (nextPath) {
-    const res = await callZendesk(() =>
-      zendeskLimiter.schedule(() => {
-        if (nextPath.startsWith("http")) {
-          const base = zendeskClient.defaults.baseURL;
-          const pathOnly = nextPath.startsWith(base) ? nextPath.slice(base.length) : nextPath;
-          return zendeskClient.get(pathOnly);
-        }
-        return zendeskClient.get(nextPath);
-      })
-    );
+    let res;
+    try {
+      res = await callZendesk(() =>
+        zendeskLimiter.schedule(() => {
+          if (nextPath.startsWith("http")) {
+            const base = zendeskClient.defaults.baseURL;
+            const pathOnly = nextPath.startsWith(base) ? nextPath.slice(base.length) : nextPath;
+            return zendeskClient.get(pathOnly);
+          }
+          return zendeskClient.get(nextPath);
+        })
+      );
+    } catch (err) {
+      if (err.response?.status === 404) {
+        logger.debug(`   Ticket ${ticketId}: 404 (deleted/archived), skipping comments`);
+        return [];
+      }
+      throw err;
+    }
 
     const batch = res.data?.comments || [];
     comments.push(...batch);
@@ -226,10 +241,7 @@ export async function fetchIncrementalUsers(startTime) {
     const res = await callZendesk(() =>
       zendeskLimiter.schedule(() => {
         if (nextPath.startsWith("http")) {
-          const base = zendeskClient.defaults.baseURL;
-          const u = new URL(nextPath);
-          const pathOnly = u.pathname + u.search;
-          return zendeskClient.get(pathOnly);
+          return zendeskClient.get(nextPath);
         }
         const [pathPart, queryPart] = nextPath.split("?");
         const params = queryPart ? Object.fromEntries(new URLSearchParams(queryPart)) : {};
@@ -264,10 +276,7 @@ export async function fetchIncrementalTickets(startTime) {
     const res = await callZendesk(() =>
       zendeskLimiter.schedule(() => {
         if (nextPath.startsWith("http")) {
-          const base = zendeskClient.defaults.baseURL;
-          const u = new URL(nextPath);
-          const pathOnly = u.pathname + u.search;
-          return zendeskClient.get(pathOnly);
+          return zendeskClient.get(nextPath);
         }
         const [pathPart, queryPart] = nextPath.split("?");
         const params = queryPart ? Object.fromEntries(new URLSearchParams(queryPart)) : {};
